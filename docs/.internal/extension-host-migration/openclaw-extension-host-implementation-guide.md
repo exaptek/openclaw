@@ -92,6 +92,7 @@ What has been implemented so far:
 - compatibility plugin-registry policy now routes through `src/extension-host/plugin-registry-compat.ts`
 - compatibility plugin-registry registration actions now route through `src/extension-host/plugin-registry-registrations.ts`
 - service startup, stop ordering, service-context creation, and failure logging now route through `src/extension-host/service-lifecycle.ts`
+- CLI duplicate detection, registrar invocation, and async failure logging now route through `src/extension-host/cli-lifecycle.ts`
 - several static and lookup consumers now read through the host boundary or resolved-extension model:
   - channel registry and dock lookups
   - message-channel normalization
@@ -143,6 +144,7 @@ How it has been done:
 - by extracting provider normalization, command duplicate enforcement, and registry-local diagnostic shaping into a host-owned registry-compat helper while leaving the underlying provider-validation and plugin-command subsystems unchanged
 - by extracting low-risk registry registration actions into a host-owned registry-registrations helper so the compatibility facade composes host-owned actions instead of implementing them inline
 - by extracting service startup, stop ordering, service-context creation, and failure logging into a host-owned service-lifecycle helper while `src/plugins/services.ts` remains the compatibility entry point
+- by extracting CLI duplicate detection, registrar invocation, and async failure logging into a host-owned CLI-lifecycle helper while `src/plugins/cli.ts` remains the compatibility entry point
 - by moving central readers first, so later lifecycle and compatibility work can land on one boundary instead of many ad hoc call sites
 - by adding focused tests for each extracted seam before widening the boundary further
 
@@ -180,13 +182,14 @@ Committed implementation slices so far:
 - `944d787df1` `Plugins: extract registry compatibility policy`
 - `4ca9cd7e5e` `Plugins: extract registry registration actions`
 - `6b24e65719` `Plugins: extract service lifecycle`
+- `b5757a6625` `Plugins: extract CLI lifecycle`
 - `89414ed857` `Docs: track extension host migration internally`
 - `d8af1eceaf` `Docs: refresh extension host migration status`
 
 What is still missing for these phases:
 
 - keeping the cutover inventory current as more surfaces move
-- broader lifecycle ownership beyond the loader state machine, service-lifecycle boundary, session-owned activation state, and explicit discovery-policy, activation-policy, and finalization-policy outcomes, remaining policy gate ownership, and broad host-owned registries described for Phase 2
+- broader lifecycle ownership beyond the loader state machine, service-lifecycle boundary, CLI-lifecycle boundary, session-owned activation state, and explicit discovery-policy, activation-policy, and finalization-policy outcomes, remaining policy gate ownership, and broad host-owned registries described for Phase 2
 - minimal SDK compatibility work beyond preserving current behavior indirectly through existing loading
 - any pilot migration, event pipeline, canonical catalog, or arbitration implementation
 

@@ -67,6 +67,7 @@ What has been implemented:
 - compatibility plugin-registry policy now routes through `src/extension-host/plugin-registry-compat.ts` ahead of broader catalog-backed registry ownership
 - compatibility plugin-registry registration actions now route through `src/extension-host/plugin-registry-registrations.ts` ahead of broader catalog-backed registry ownership
 - service startup, stop ordering, service-context creation, and failure logging now route through `src/extension-host/service-lifecycle.ts` ahead of broader catalog-backed lifecycle ownership
+- CLI duplicate detection, registrar invocation, and async failure logging now route through `src/extension-host/cli-lifecycle.ts` ahead of broader catalog-backed CLI ownership
 
 How it has been implemented:
 
@@ -96,6 +97,7 @@ How it has been implemented:
 - by extracting provider normalization, command duplicate enforcement, and registry-local diagnostic shaping into a host-owned registry-compat helper while leaving the underlying provider-validation and plugin-command subsystems unchanged
 - by extracting low-risk registry registration actions into a host-owned registry-registrations helper so the compatibility facade composes host-owned actions instead of implementing them inline
 - by extracting service startup, stop ordering, service-context creation, and failure logging into a host-owned service-lifecycle helper before broader catalog-backed service ownership
+- by extracting CLI duplicate detection, registrar invocation, and async failure logging into a host-owned CLI-lifecycle helper before broader catalog-backed CLI ownership
 
 What remains pending:
 
