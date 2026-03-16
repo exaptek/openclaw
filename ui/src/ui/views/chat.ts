@@ -1328,7 +1328,8 @@ export function renderChat(props: ChatProps) {
   `;
 }
 
-const CHAT_HISTORY_RENDER_LIMIT = 200;
+// Cap rendered history to avoid main-thread freeze (markdown + DOM for each message).
+const CHAT_HISTORY_RENDER_LIMIT = 25;
 
 function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup> {
   const result: Array<ChatItem | MessageGroup> = [];
