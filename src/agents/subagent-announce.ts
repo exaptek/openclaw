@@ -13,6 +13,7 @@ import { createBoundDeliveryRouter } from "../infra/outbound/bound-delivery-rout
 import { resolveConversationIdFromTargets } from "../infra/outbound/conversation-id.js";
 import type { ConversationRef } from "../infra/outbound/session-binding-service.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
+import type { PluginHookSubagentAnnounceEvent } from "../plugins/types.js";
 import { normalizeAccountId, normalizeMainKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { isCronSessionKey } from "../sessions/session-key-utils.js";
@@ -1046,7 +1047,22 @@ async function sendSubagentAnnounceDirectly(params: {
   }
 }
 
-async function deliverSubagentAnnouncement(params: {
+function normalizeRequesterOriginForAnnounceHook(
+  origin?: DeliveryContext,
+): PluginHookSubagentAnnounceEvent["requesterOrigin"] {
+  const normalized = normalizeDeliveryContext(origin);
+  if (!normalized) {
+    return undefined;
+  }
+  return {
+    channel: normalized.channel,
+    accountId: normalized.accountId,
+    to: normalized.to,
+    threadId: normalized.threadId,
+  };
+}
+
+export async function deliverSubagentAnnouncement(params: {
   requesterSessionKey: string;
   announceId?: string;
   triggerMessage: string;
@@ -1065,7 +1081,36 @@ async function deliverSubagentAnnouncement(params: {
   bestEffortDeliver?: boolean;
   directIdempotencyKey: string;
   signal?: AbortSignal;
+  childRunId?: string;
 }): Promise<SubagentAnnounceDeliveryResult> {
+  const hookRunner = getGlobalHookRunner();
+  if (hookRunner?.hasHooks("subagent_announce")) {
+    try {
+      const hookResult = await hookRunner.runSubagentAnnounce(
+        {
+          steerMessage: params.steerMessage,
+          internalEvents: params.internalEvents as unknown[] | undefined,
+          requesterSessionKey: params.targetRequesterSessionKey,
+          sourceSessionKey: params.sourceSessionKey,
+          announceId: params.announceId,
+          summaryLine: params.summaryLine,
+          expectsCompletionMessage: params.expectsCompletionMessage,
+          requesterOrigin: normalizeRequesterOriginForAnnounceHook(params.requesterOrigin),
+        },
+        {
+          runId: params.childRunId,
+          childSessionKey: params.sourceSessionKey,
+          requesterSessionKey: params.targetRequesterSessionKey,
+        },
+      );
+      if (hookResult?.suppressDefaultDelivery) {
+        return { delivered: true, path: "hook" };
+      }
+    } catch (err) {
+      defaultRuntime.error?.(`subagent_announce hook failed: ${String(err)}`);
+    }
+  }
+
   return await runSubagentAnnounceDispatch({
     expectsCompletionMessage: params.expectsCompletionMessage,
     signal: params.signal,
@@ -1666,6 +1711,7 @@ export async function runSubagentAnnounceFlow(params: {
       bestEffortDeliver: params.bestEffortDeliver,
       directIdempotencyKey,
       signal: params.signal,
+      childRunId: params.childRunId,
     });
     didAnnounce = delivery.delivered;
     if (!delivery.delivered && delivery.path === "direct" && delivery.error) {

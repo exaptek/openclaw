@@ -1,5 +1,5 @@
 /**
- * Test: subagent_spawning, subagent_delivery_target, subagent_spawned & subagent_ended hook wiring
+ * Test: subagent_spawning, subagent_delivery_target, subagent_announce, subagent_spawned & subagent_ended hook wiring
  */
 import { describe, expect, it, vi } from "vitest";
 import { createHookRunner } from "./hooks.js";
@@ -94,6 +94,29 @@ describe("subagent hook runner methods", () => {
     });
   });
 
+  it("runSubagentAnnounce invokes registered subagent_announce hooks and OR-merges suppressDefaultDelivery", async () => {
+    const handlerA = vi.fn(async () => ({ suppressDefaultDelivery: false as const }));
+    const handlerB = vi.fn(async () => ({ suppressDefaultDelivery: true as const }));
+    const registry = createMockPluginRegistry([
+      { hookName: "subagent_announce", handler: handlerA },
+      { hookName: "subagent_announce", handler: handlerB },
+    ]);
+    const runner = createHookRunner(registry);
+    const event = {
+      steerMessage: "steer",
+      internalEvents: [{ type: "task_completion" }],
+      requesterSessionKey: "agent:main:main",
+      sourceSessionKey: "agent:main:subagent:child",
+      expectsCompletionMessage: true,
+    };
+
+    const result = await runner.runSubagentAnnounce(event, baseSubagentCtx);
+
+    expect(handlerA).toHaveBeenCalledWith(event, baseSubagentCtx);
+    expect(handlerB).toHaveBeenCalledWith(event, baseSubagentCtx);
+    expect(result).toEqual({ suppressDefaultDelivery: true });
+  });
+
   it("runSubagentDeliveryTarget returns undefined when no matching hooks are registered", async () => {
     const registry = createMockPluginRegistry([]);
     const runner = createHookRunner(registry);
@@ -134,11 +157,13 @@ describe("subagent hook runner methods", () => {
     const registry = createMockPluginRegistry([
       { hookName: "subagent_spawning", handler: vi.fn() },
       { hookName: "subagent_delivery_target", handler: vi.fn() },
+      { hookName: "subagent_announce", handler: vi.fn() },
     ]);
     const runner = createHookRunner(registry);
 
     expect(runner.hasHooks("subagent_spawning")).toBe(true);
     expect(runner.hasHooks("subagent_delivery_target")).toBe(true);
+    expect(runner.hasHooks("subagent_announce")).toBe(true);
     expect(runner.hasHooks("subagent_spawned")).toBe(false);
     expect(runner.hasHooks("subagent_ended")).toBe(false);
   });

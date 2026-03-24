@@ -41,6 +41,8 @@ import type {
   PluginHookSessionEndEvent,
   PluginHookSessionStartEvent,
   PluginHookSubagentContext,
+  PluginHookSubagentAnnounceEvent,
+  PluginHookSubagentAnnounceResult,
   PluginHookSubagentDeliveryTargetEvent,
   PluginHookSubagentDeliveryTargetResult,
   PluginHookSubagentSpawningEvent,
@@ -91,6 +93,8 @@ export type {
   PluginHookSessionStartEvent,
   PluginHookSessionEndEvent,
   PluginHookSubagentContext,
+  PluginHookSubagentAnnounceEvent,
+  PluginHookSubagentAnnounceResult,
   PluginHookSubagentDeliveryTargetEvent,
   PluginHookSubagentDeliveryTargetResult,
   PluginHookSubagentSpawningEvent,
@@ -213,6 +217,13 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     }
     return next;
   };
+
+  const mergeSubagentAnnounceResult = (
+    acc: PluginHookSubagentAnnounceResult | undefined,
+    next: PluginHookSubagentAnnounceResult,
+  ): PluginHookSubagentAnnounceResult => ({
+    suppressDefaultDelivery: Boolean(acc?.suppressDefaultDelivery || next.suppressDefaultDelivery),
+  });
 
   const handleHookError = (params: {
     hookName: PluginHookName;
@@ -853,6 +864,22 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
   }
 
   /**
+   * Run subagent_announce hook.
+   * Runs sequentially so plugins can perform side effects (e.g. Lambda invoke) before delivery.
+   */
+  async function runSubagentAnnounce(
+    event: PluginHookSubagentAnnounceEvent,
+    ctx: PluginHookSubagentContext,
+  ): Promise<PluginHookSubagentAnnounceResult | undefined> {
+    return runModifyingHook<"subagent_announce", PluginHookSubagentAnnounceResult>(
+      "subagent_announce",
+      event,
+      ctx,
+      mergeSubagentAnnounceResult,
+    );
+  }
+
+  /**
    * Run subagent_spawned hook.
    * Runs in parallel (fire-and-forget).
    */
@@ -947,6 +974,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     runSessionEnd,
     runSubagentSpawning,
     runSubagentDeliveryTarget,
+    runSubagentAnnounce,
     runSubagentSpawned,
     runSubagentEnded,
     // Gateway hooks

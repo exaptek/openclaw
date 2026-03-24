@@ -1421,6 +1421,7 @@ export type PluginHookName =
   | "session_end"
   | "subagent_spawning"
   | "subagent_delivery_target"
+  | "subagent_announce"
   | "subagent_spawned"
   | "subagent_ended"
   | "gateway_start"
@@ -1448,6 +1449,7 @@ export const PLUGIN_HOOK_NAMES = [
   "session_end",
   "subagent_spawning",
   "subagent_delivery_target",
+  "subagent_announce",
   "subagent_spawned",
   "subagent_ended",
   "gateway_start",
@@ -1864,6 +1866,30 @@ export type PluginHookSubagentDeliveryTargetResult = {
   };
 };
 
+// subagent_announce hook — fired before announce delivery (gateway / queue)
+export type PluginHookSubagentAnnounceEvent = {
+  /** Pre-formatted steer text (same as gateway `message` param). */
+  steerMessage: string;
+  /** Structured `task_completion` events (opaque to plugin SDK surface). */
+  internalEvents?: unknown[];
+  requesterSessionKey: string;
+  sourceSessionKey?: string;
+  announceId?: string;
+  summaryLine?: string;
+  expectsCompletionMessage: boolean;
+  requesterOrigin?: {
+    channel?: string;
+    accountId?: string;
+    to?: string;
+    threadId?: string | number;
+  };
+};
+
+export type PluginHookSubagentAnnounceResult = {
+  /** When true, skip the default announce dispatch (queue + direct gateway). */
+  suppressDefaultDelivery?: boolean;
+};
+
 // subagent_spawned hook
 export type PluginHookSubagentSpawnedEvent = PluginHookSubagentSpawnBase & {
   runId: string;
@@ -1983,6 +2009,10 @@ export type PluginHookHandlerMap = {
     | Promise<PluginHookSubagentDeliveryTargetResult | void>
     | PluginHookSubagentDeliveryTargetResult
     | void;
+  subagent_announce: (
+    event: PluginHookSubagentAnnounceEvent,
+    ctx: PluginHookSubagentContext,
+  ) => Promise<PluginHookSubagentAnnounceResult | void> | PluginHookSubagentAnnounceResult | void;
   subagent_spawned: (
     event: PluginHookSubagentSpawnedEvent,
     ctx: PluginHookSubagentContext,
