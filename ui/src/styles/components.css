@@ -3485,7 +3485,17 @@ td.data-table-key-col {
 }
 
 .md-preview-dialog__body.sidebar-markdown :is(ul, ol) {
-  padding-left: 1.35rem;
+  padding-left: 1.1rem;
+}
+
+.md-preview-dialog__body.sidebar-markdown :is(ul ul, ul ol, ol ul, ol ol) {
+  margin-top: 0.45rem;
+  margin-bottom: 0.45rem;
+  padding-left: 0.95rem;
+}
+
+.md-preview-dialog__body.sidebar-markdown li {
+  padding-left: 0.1rem;
 }
 
 .md-preview-dialog__body.sidebar-markdown li + li {
