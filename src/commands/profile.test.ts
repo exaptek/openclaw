@@ -141,7 +141,9 @@ describe("profile commands", () => {
 
     await profileDoctorCommand(runtime, "doctor-test", { json: false });
 
-    expect(lines.join("\n")).toContain("agents.defaults.workspace points outside");
+    expect(lines.join("\n")).toContain(
+      "agents.defaults.workspace diverges from the managed profile workspace",
+    );
   });
 
   it("imports a legacy named profile without changing its effective roots", async () => {
@@ -174,6 +176,19 @@ describe("profile commands", () => {
     await fs.mkdir(path.join(root, ".openclaw-shadow"), { recursive: true });
 
     await expect(profileCreateCommand(runtime, "shadow", {})).rejects.toThrow(
+      /profile import shadow/i,
+    );
+  });
+
+  it("refuses to clone into a destination id already used by a legacy profile", async () => {
+    const root = await fs.mkdtemp(path.join(process.cwd(), ".tmp-profile-clone-shadow-"));
+    process.env.OPENCLAW_HOME = root;
+    const runtime = createNonExitingRuntime();
+
+    await profileCreateCommand(runtime, "source", {});
+    await fs.mkdir(path.join(root, ".openclaw-shadow"), { recursive: true });
+
+    await expect(profileCloneCommand(runtime, "source", "shadow", {})).rejects.toThrow(
       /profile import shadow/i,
     );
   });

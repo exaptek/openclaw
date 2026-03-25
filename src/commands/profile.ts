@@ -200,7 +200,7 @@ async function buildDoctorReport(profile: ResolvedProfile) {
       : null;
   if (configuredWorkspace && configuredWorkspace !== path.resolve(profile.workspaceDir)) {
     warnings.push(
-      `agents.defaults.workspace points outside the resolved profile workspace (${configuredWorkspace})`,
+      `agents.defaults.workspace diverges from the managed profile workspace (configured: ${configuredWorkspace}, expected: ${path.resolve(profile.workspaceDir)})`,
     );
   }
   const gateway = withRecord(config.gateway);
@@ -382,6 +382,12 @@ export async function profileCloneCommand(
   const existingManaged = await readManagedProfile(id);
   if (existingManaged) {
     throw new Error(`Managed profile already exists: ${id}`);
+  }
+  const existingSelection = await resolveProfileSelection(id);
+  if (existingSelection.mode === "legacy-unmanaged") {
+    throw new Error(
+      `Legacy profile already exists: ${id}. Use "openclaw profile import ${id}" instead.`,
+    );
   }
 
   const source = await resolveProfileSelection(sourceId);

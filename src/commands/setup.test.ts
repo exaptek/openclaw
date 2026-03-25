@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { withTempHome } from "../../test/helpers/temp-home.js";
+import { readManagedProfile } from "../profiles/managed.js";
 import { setupCommand } from "./setup.js";
 
 describe("setupCommand", () => {
@@ -56,6 +57,30 @@ describe("setupCommand", () => {
 
       expect(raw.agents?.defaults?.workspace).toBe(workspace);
       expect(raw.gateway?.mode).toBe("local");
+    });
+  });
+
+  it("allocates distinct managed profile ports when setup bootstraps multiple profiles", async () => {
+    await withTempHome(async (home) => {
+      const runtime = {
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn(),
+      };
+      process.env.OPENCLAW_HOME = home;
+      delete process.env.OPENCLAW_STATE_DIR;
+      delete process.env.OPENCLAW_CONFIG_PATH;
+      process.env.OPENCLAW_PROFILE = "work-a";
+      await setupCommand({ workspace: path.join(home, "workspace-a") }, runtime);
+      process.env.OPENCLAW_PROFILE = "work-b";
+      await setupCommand({ workspace: path.join(home, "workspace-b") }, runtime);
+
+      const env = { ...process.env, OPENCLAW_HOME: home } as NodeJS.ProcessEnv;
+      const first = await readManagedProfile("work-a", env, () => home);
+      const second = await readManagedProfile("work-b", env, () => home);
+      expect(first?.basePort).toBeDefined();
+      expect(second?.basePort).toBeDefined();
+      expect(first?.basePort).not.toBe(second?.basePort);
     });
   });
 });

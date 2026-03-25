@@ -11,6 +11,8 @@ export const PROFILE_SCHEMA_VERSION = 1;
 export const DEFAULT_PROFILE_ID = "default";
 export const DEFAULT_PROFILE_ROOT_BASENAME = ".openclaw";
 const CONFIG_FILENAME = "openclaw.json";
+// Includes the canonical filename because legacy profile resolution searches
+// for the active config path directly, unlike config/paths.ts candidate ordering.
 const LEGACY_CONFIG_FILENAMES = ["openclaw.json", "clawdbot.json", "moldbot.json"] as const;
 const LEGACY_STATE_DIRNAMES = [".openclaw", ".clawdbot", ".moldbot"] as const;
 const PROFILE_SUBDIR = "profiles";
@@ -243,10 +245,10 @@ export async function readManagedProfile(
   if (!spec) {
     return null;
   }
-  const configuredGatewayPort = await readGatewayPortFromConfig(
-    resolveProfileComponentPath(profileRoot, spec.roots.config),
-  );
   try {
+    const configuredGatewayPort = await readGatewayPortFromConfig(
+      resolveProfileComponentPath(profileRoot, spec.roots.config),
+    );
     return buildResolvedManagedProfile(spec, profileRoot, configuredGatewayPort);
   } catch (err) {
     return buildResolvedProfile({
@@ -259,7 +261,7 @@ export async function readManagedProfile(
       stateDir: path.join(profileRoot, "state"),
       workspaceDir: path.join(profileRoot, "workspace"),
       basePort: spec.network.basePort,
-      configuredGatewayPort,
+      configuredGatewayPort: undefined,
       exists: true,
       managed: true,
       createdAt: spec.createdAt,
@@ -281,10 +283,10 @@ export function readManagedProfileSync(
   if (!spec) {
     return null;
   }
-  const configuredGatewayPort = readGatewayPortFromConfigSync(
-    resolveProfileComponentPath(profileRoot, spec.roots.config),
-  );
   try {
+    const configuredGatewayPort = readGatewayPortFromConfigSync(
+      resolveProfileComponentPath(profileRoot, spec.roots.config),
+    );
     return buildResolvedManagedProfile(spec, profileRoot, configuredGatewayPort);
   } catch (err) {
     return buildResolvedProfile({
@@ -297,7 +299,7 @@ export function readManagedProfileSync(
       stateDir: path.join(profileRoot, "state"),
       workspaceDir: path.join(profileRoot, "workspace"),
       basePort: spec.network.basePort,
-      configuredGatewayPort,
+      configuredGatewayPort: undefined,
       exists: true,
       managed: true,
       createdAt: spec.createdAt,
@@ -636,9 +638,13 @@ export async function ensureManagedProfile(
   if (selected.mode === "legacy-unmanaged") {
     return importLegacyProfile(profileId, env, homedir);
   }
+  const basePort =
+    selected.mode === "implicit-managed"
+      ? await suggestProfileBasePort(env, homedir)
+      : selected.effectiveGatewayPort;
   const spec = createProfileSpec({
     id: selected.id,
-    basePort: selected.effectiveGatewayPort,
+    basePort,
   });
   return writeManagedProfileSpec(spec, env, homedir);
 }
