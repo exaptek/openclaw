@@ -416,6 +416,8 @@ async function applyMessageSendingHook(params: {
   to: string;
   channel: Exclude<OutboundChannel, "none">;
   accountId?: string;
+  /** Canonical session key for plugin hooks (cron/outbound correlation). */
+  sessionKey?: string;
 }): Promise<{
   cancelled: boolean;
   payload: ReplyPayload;
@@ -437,6 +439,9 @@ async function applyMessageSendingHook(params: {
           channel: params.channel,
           accountId: params.accountId,
           mediaUrls: params.payloadSummary.mediaUrls,
+          source: "outbound_deliver",
+          openclawOutboundPipeline: "deliverOutboundPayloads",
+          ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
         },
       },
       {
@@ -658,6 +663,7 @@ async function deliverOutboundPayloadsCore(
         to,
         channel,
         accountId,
+        sessionKey: sessionKeyForInternalHooks,
       });
       if (hookResult.cancelled) {
         continue;

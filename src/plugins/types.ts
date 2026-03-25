@@ -1690,6 +1690,10 @@ export type PluginHookMessageReceivedEvent = {
 export type PluginHookMessageSendingEvent = {
   to: string;
   content: string;
+  /**
+   * Core passes channel/account/media; outbound deliver may add
+   * `source`, `openclawOutboundPipeline`, and `sessionKey` for correlation.
+   */
   metadata?: Record<string, unknown>;
 };
 

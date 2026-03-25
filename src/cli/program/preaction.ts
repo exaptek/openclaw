@@ -27,8 +27,10 @@ function setProcessTitleForCommand(actionCommand: Command) {
   process.title = `${cliName}-${name}`;
 }
 
-// Commands that need channel plugins loaded
+// Commands that need channel plugins loaded (incl. `agent`: SSM/cron uses CLI agent;
+// plugins initialize the global hook runner so message_sending runs in deliverOutboundPayloads).
 const PLUGIN_REQUIRED_COMMANDS = new Set([
+  "agent",
   "message",
   "channels",
   "directory",

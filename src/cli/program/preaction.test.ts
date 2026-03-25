@@ -161,6 +161,7 @@ describe("registerPreActionHooks", () => {
       .command("status")
       .option("--json")
       .action(() => {});
+    program.command("agent").action(() => {});
     program
       .command("message")
       .command("send")
@@ -228,6 +229,15 @@ describe("registerPreActionHooks", () => {
       runtime: runtimeMock,
       commandPath: ["message", "send"],
     });
+    expect(ensurePluginRegistryLoadedMock).toHaveBeenCalledWith({ scope: "all" });
+  });
+
+  it("loads plugins for agent command so outbound plugin hooks (e.g. message_sending) run", async () => {
+    await runPreAction({
+      parseArgv: ["agent"],
+      processArgv: ["node", "openclaw", "agent"],
+    });
+
     expect(ensurePluginRegistryLoadedMock).toHaveBeenCalledWith({ scope: "all" });
   });
 
