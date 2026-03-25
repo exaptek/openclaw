@@ -27,6 +27,7 @@ import { SsrFBlockedError } from "../infra/net/ssrf.js";
 import { deliverOutboundPayloads } from "../infra/outbound/deliver.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { getChildLogger } from "../logging.js";
+import { getGlobalHookRunner, hasGlobalHooks } from "../plugins/hook-runner-global.js";
 import { normalizeAgentId, toAgentStoreSessionKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 
@@ -57,7 +58,7 @@ function redactWebhookUrl(url: string): string {
 
 type CronWebhookTarget = {
   url: string;
-  source: "delivery" | "legacy";
+  source: "delivery" | "legacy" | "fallback";
 };
 
 function resolveCronWebhookTarget(params: {
@@ -75,6 +76,16 @@ function resolveCronWebhookTarget(params: {
     const legacyUrl = normalizeHttpWebhookUrl(params.legacyWebhook);
     if (legacyUrl) {
       return { url: legacyUrl, source: "legacy" };
+    }
+  }
+
+  // Universal fallback: when cron.webhook is configured but the job has no
+  // per-job delivery config and is not a legacy notify job, still POST to the
+  // global webhook so headless/SSH-originated sessions get outbound delivery.
+  if (!params.delivery?.mode && !params.legacyNotify) {
+    const fallbackUrl = normalizeHttpWebhookUrl(params.legacyWebhook);
+    if (fallbackUrl) {
+      return { url: fallbackUrl, source: "fallback" };
     }
   }
 
@@ -410,6 +421,34 @@ export function buildGatewayCronService(params: {
               failedLog: "cron: webhook delivery failed",
               logger: cronLogger,
             });
+          })();
+        }
+
+        // Fire message_sending hook for cron summaries so plugins (e.g.
+        // NemoClaw) can deliver via SDK (Lambda invoke) even when the sandbox
+        // blocks outbound HTTP/DNS used by the webhook path above.
+        if (evt.summary && hasGlobalHooks("message_sending")) {
+          void (async () => {
+            try {
+              const hookRunner = getGlobalHookRunner();
+              await hookRunner?.runMessageSending(
+                {
+                  to: "cron",
+                  content: evt.summary!,
+                  metadata: {
+                    source: "cron_finished",
+                    jobId: evt.jobId,
+                    jobName: job?.name,
+                  },
+                },
+                { channelId: "cron" },
+              );
+            } catch (err) {
+              cronLogger.warn(
+                { jobId: evt.jobId, err: formatErrorMessage(err) },
+                "cron: message_sending hook failed for cron job summary",
+              );
+            }
           })();
         }
 
