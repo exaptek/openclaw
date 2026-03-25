@@ -22,6 +22,7 @@ import { isRecord } from "../utils.js";
 import { findDuplicateAgentDirs, formatDuplicateAgentDirError } from "./agent-dirs.js";
 import { appendAllowedValuesHint, summarizeAllowedValues } from "./allowed-values.js";
 import { applyAgentDefaults, applyModelDefaults, applySessionDefaults } from "./defaults.js";
+import { normalizeLegacyNemoclawPluginConfig } from "./legacy-nemoclaw-plugin-config.js";
 import {
   listLegacyWebSearchConfigPaths,
   normalizeLegacyWebSearchConfig,
@@ -235,7 +236,7 @@ function validateGatewayTailscaleBind(config: OpenClawConfig): ConfigValidationI
 export function validateConfigObjectRaw(
   raw: unknown,
 ): { ok: true; config: OpenClawConfig } | { ok: false; issues: ConfigValidationIssue[] } {
-  const normalizedRaw = normalizeLegacyWebSearchConfig(raw);
+  const normalizedRaw = normalizeLegacyNemoclawPluginConfig(normalizeLegacyWebSearchConfig(raw));
   const legacyIssues = findLegacyConfigIssues(normalizedRaw);
   if (legacyIssues.length > 0) {
     return {
