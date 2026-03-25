@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { withTempHome } from "../../test/helpers/temp-home.js";
+import { applyCliProfileEnv } from "../cli/profile.js";
 import { readManagedProfile } from "../profiles/managed.js";
 import { setupCommand } from "./setup.js";
 
@@ -81,6 +82,31 @@ describe("setupCommand", () => {
       expect(first?.basePort).toBeDefined();
       expect(second?.basePort).toBeDefined();
       expect(first?.basePort).not.toBe(second?.basePort);
+    });
+  });
+
+  it("bootstraps a managed profile when profile paths were auto-filled by CLI selection", async () => {
+    await withTempHome(async (home) => {
+      const runtime = {
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn(),
+      };
+      process.env.OPENCLAW_HOME = home;
+      delete process.env.OPENCLAW_STATE_DIR;
+      delete process.env.OPENCLAW_CONFIG_PATH;
+      delete process.env.OPENCLAW_GATEWAY_PORT;
+      applyCliProfileEnv({
+        profile: "work-auto",
+        env: process.env as Record<string, string | undefined>,
+        homedir: () => home,
+      });
+
+      await setupCommand({ workspace: path.join(home, "workspace-auto") }, runtime);
+
+      const profile = await readManagedProfile("work-auto", process.env, () => home);
+      expect(profile?.managed).toBe(true);
+      expect(profile?.exists).toBe(true);
     });
   });
 });

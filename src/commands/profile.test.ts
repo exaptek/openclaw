@@ -245,6 +245,22 @@ describe("profile commands", () => {
     );
   });
 
+  it("avoids reusing dev's preferred port when another profile already occupies it", async () => {
+    const root = await fs.mkdtemp(path.join(process.cwd(), ".tmp-profile-dev-port-"));
+    process.env.OPENCLAW_HOME = root;
+    const runtime = createNonExitingRuntime();
+
+    await profileCreateCommand(runtime, "work", {});
+    const work = await readManagedProfile("work", process.env, () => root);
+    expect(work?.basePort).toBe(19001);
+
+    await profileCreateCommand(runtime, "dev", {});
+
+    const dev = await readManagedProfile("dev", process.env, () => root);
+    expect(dev?.basePort).toBeDefined();
+    expect(dev?.basePort).not.toBe(work?.basePort);
+  });
+
   it("refuses to delete the active profile without force", async () => {
     const root = await fs.mkdtemp(path.join(process.cwd(), ".tmp-profile-delete-"));
     process.env.OPENCLAW_HOME = root;

@@ -1,5 +1,8 @@
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withTempHome } from "../../test/helpers/temp-home.js";
+import { applyCliProfileEnv } from "../cli/profile.js";
+import { readManagedProfile } from "../profiles/managed.js";
 import type { RuntimeEnv } from "../runtime.js";
 
 const mocks = vi.hoisted(() => ({
@@ -137,6 +140,27 @@ describe("setupWizardCommand", () => {
     );
 
     expect(mocks.handleReset).toHaveBeenCalledWith("full", expect.any(String), runtime);
+  });
+
+  it("bootstraps a managed profile when onboard runs with auto-filled profile paths", async () => {
+    await withTempHome(async (home) => {
+      const runtime = makeRuntime();
+      process.env.OPENCLAW_HOME = home;
+      delete process.env.OPENCLAW_STATE_DIR;
+      delete process.env.OPENCLAW_CONFIG_PATH;
+      delete process.env.OPENCLAW_GATEWAY_PORT;
+      applyCliProfileEnv({
+        profile: "onboard-auto",
+        env: process.env as Record<string, string | undefined>,
+        homedir: () => home,
+      });
+
+      await setupWizardCommand({}, runtime);
+
+      const profile = await readManagedProfile("onboard-auto", process.env, () => home);
+      expect(profile?.managed).toBe(true);
+      expect(mocks.runInteractiveSetup).toHaveBeenCalled();
+    });
   });
 
   it("fails fast for invalid --reset-scope", async () => {

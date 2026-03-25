@@ -18,10 +18,11 @@ export async function setupWizardCommand(
   runtime: RuntimeEnv = defaultRuntime,
 ) {
   const selectedProfile = process.env.OPENCLAW_PROFILE?.trim();
+  const autoProfilePaths = process.env.OPENCLAW_PROFILE_AUTO_PATHS === "1";
   const hasExplicitPathOverride =
     Boolean(process.env.OPENCLAW_STATE_DIR?.trim()) ||
     Boolean(process.env.OPENCLAW_CONFIG_PATH?.trim());
-  if (selectedProfile && !hasExplicitPathOverride) {
+  if (selectedProfile && (!hasExplicitPathOverride || autoProfilePaths)) {
     await ensureManagedProfile(selectedProfile);
   }
 

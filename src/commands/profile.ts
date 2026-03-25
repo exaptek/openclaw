@@ -170,11 +170,12 @@ async function copyProfileStateTree(params: {
 async function chooseBasePort(profileId: string, from?: string): Promise<number> {
   const id = normalizeProfileId(profileId);
   if (!from) {
-    if (id === "default") {
-      return 18789;
-    }
-    if (id === "dev") {
-      return 19001;
+    const preferredPort = id === "default" ? 18789 : id === "dev" ? 19001 : undefined;
+    if (preferredPort) {
+      const existing = await listProfiles();
+      if (!existing.some((profile) => profile.effectiveGatewayPort === preferredPort)) {
+        return preferredPort;
+      }
     }
   }
   return suggestProfileBasePort();

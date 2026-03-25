@@ -133,6 +133,11 @@ export function applyCliProfileEnv(params: {
       ? path.join(stateDir, "openclaw.json")
       : path.resolve(selected.configPath);
   }
+  if (!explicitStateDir && !explicitConfigPath) {
+    env.OPENCLAW_PROFILE_AUTO_PATHS = "1";
+  } else {
+    delete env.OPENCLAW_PROFILE_AUTO_PATHS;
+  }
 
   if (!env.OPENCLAW_GATEWAY_PORT?.trim() && !explicitStateDir && !explicitConfigPath) {
     env.OPENCLAW_GATEWAY_PORT = String(selected.effectiveGatewayPort);

@@ -108,6 +108,7 @@ describe("applyCliProfileEnv", () => {
     expect(env.OPENCLAW_STATE_DIR).toBe(path.join(expectedRoot, "state"));
     expect(env.OPENCLAW_CONFIG_PATH).toBe(path.join(expectedRoot, "config", "openclaw.json"));
     expect(env.OPENCLAW_GATEWAY_PORT).toBe("19001");
+    expect(env.OPENCLAW_PROFILE_AUTO_PATHS).toBe("1");
   });
 
   it("does not override explicit env values", () => {
@@ -123,6 +124,7 @@ describe("applyCliProfileEnv", () => {
     expect(env.OPENCLAW_STATE_DIR).toBe("/custom");
     expect(env.OPENCLAW_GATEWAY_PORT).toBe("19099");
     expect(env.OPENCLAW_CONFIG_PATH).toBe(path.join("/custom", "openclaw.json"));
+    expect(env.OPENCLAW_PROFILE_AUTO_PATHS).toBeUndefined();
   });
 
   it("does not inject a profile gateway port when explicit state dir is set", () => {

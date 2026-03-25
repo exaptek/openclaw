@@ -213,4 +213,15 @@ describe("state + config path candidates", () => {
       expect(resolveGatewayPort(undefined, env)).toBe(19555);
     });
   });
+
+  it("does not fall back to a profile port when config/state paths are explicitly overridden", async () => {
+    await withTempDir({ prefix: "openclaw-profile-port-override-" }, async (root) => {
+      const env = {
+        OPENCLAW_HOME: root,
+        OPENCLAW_PROFILE: "dev",
+        OPENCLAW_STATE_DIR: path.join(root, "override-state"),
+      } as NodeJS.ProcessEnv;
+      expect(resolveGatewayPort(undefined, env)).toBe(18789);
+    });
+  });
 });

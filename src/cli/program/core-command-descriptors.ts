@@ -6,6 +6,11 @@ export type CoreCliCommandDescriptor = {
 
 export const CORE_CLI_COMMAND_DESCRIPTORS = [
   {
+    name: "profile",
+    description: "Manage first-class OpenClaw profiles",
+    hasSubcommands: true,
+  },
+  {
     name: "setup",
     description: "Initialize local config and agent workspace",
     hasSubcommands: false,
