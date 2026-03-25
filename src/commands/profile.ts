@@ -120,6 +120,11 @@ function classifyStateEntry(relativePath: string): "copy" | "skip" {
   return "copy";
 }
 
+function isPathWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
 async function copyProfileStateTree(params: {
   sourceRoot: string;
   destinationRoot: string;
@@ -139,7 +144,15 @@ async function copyProfileStateTree(params: {
     }
     const srcPath = path.join(params.sourceRoot, childRelative);
     const dstPath = path.join(params.destinationRoot, childRelative);
-    if (entry.isDirectory()) {
+    const stats = await fsp.lstat(srcPath).catch(() => null);
+    if (!stats || stats.isSymbolicLink()) {
+      continue;
+    }
+    const realPath = await fsp.realpath(srcPath).catch(() => null);
+    if (!realPath || !isPathWithinRoot(params.sourceRoot, realPath)) {
+      continue;
+    }
+    if (stats.isDirectory()) {
       await copyProfileStateTree({
         sourceRoot: params.sourceRoot,
         destinationRoot: params.destinationRoot,
@@ -147,7 +160,7 @@ async function copyProfileStateTree(params: {
       });
       continue;
     }
-    if (entry.isFile()) {
+    if (stats.isFile()) {
       await fsp.mkdir(path.dirname(dstPath), { recursive: true, mode: 0o700 });
       await fsp.copyFile(srcPath, dstPath);
     }

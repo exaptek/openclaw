@@ -95,8 +95,15 @@ export function normalizeProfileId(raw?: string | null): string {
   return normalizeProfileName(raw) ?? DEFAULT_PROFILE_ID;
 }
 
-function resolveProfileComponentPath(profileRoot: string, value: string): string {
+function resolveProfileComponentPath(
+  profileRoot: string,
+  value: string,
+  opts?: { allowAbsolute?: boolean },
+): string {
   if (path.isAbsolute(value)) {
+    if (!opts?.allowAbsolute) {
+      throw new Error(`Absolute profile paths are not allowed: ${value}`);
+    }
     return path.resolve(value);
   }
   const resolved = path.resolve(profileRoot, value);
@@ -142,6 +149,25 @@ function readGatewayPortFromConfigSync(configPath: string): number | undefined {
     return readGatewayPortFromConfigObject(JSON5.parse(raw));
   } catch {
     return undefined;
+  }
+}
+
+function isPathWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function isSafeLegacyRoot(candidate: string, home: string): boolean {
+  try {
+    const stat = fs.lstatSync(candidate);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      return false;
+    }
+    const resolvedHome = fs.realpathSync(home);
+    const real = fs.realpathSync(candidate);
+    return isPathWithinRoot(resolvedHome, real);
+  } catch {
+    return false;
   }
 }
 
@@ -215,15 +241,18 @@ function buildResolvedManagedProfile(
   profileRoot: string,
   configuredGatewayPort?: number,
 ): ResolvedProfile {
+  const allowAbsolute = Boolean(spec.adoptedFromLegacy);
   return buildResolvedProfile({
     id: spec.id,
     kind: "managed",
     mode: spec.adoptedFromLegacy ? "adopted-legacy" : "managed-native",
     profileRoot,
     manifestPath: path.join(profileRoot, "profile.json"),
-    configPath: resolveProfileComponentPath(profileRoot, spec.roots.config),
-    stateDir: resolveProfileComponentPath(profileRoot, spec.roots.state),
-    workspaceDir: resolveProfileComponentPath(profileRoot, spec.roots.workspace),
+    configPath: resolveProfileComponentPath(profileRoot, spec.roots.config, { allowAbsolute }),
+    stateDir: resolveProfileComponentPath(profileRoot, spec.roots.state, { allowAbsolute }),
+    workspaceDir: resolveProfileComponentPath(profileRoot, spec.roots.workspace, {
+      allowAbsolute,
+    }),
     basePort: spec.network.basePort,
     configuredGatewayPort,
     exists: true,
@@ -246,8 +275,9 @@ export async function readManagedProfile(
     return null;
   }
   try {
+    const allowAbsolute = Boolean(spec.adoptedFromLegacy);
     const configuredGatewayPort = await readGatewayPortFromConfig(
-      resolveProfileComponentPath(profileRoot, spec.roots.config),
+      resolveProfileComponentPath(profileRoot, spec.roots.config, { allowAbsolute }),
     );
     return buildResolvedManagedProfile(spec, profileRoot, configuredGatewayPort);
   } catch (err) {
@@ -284,8 +314,9 @@ export function readManagedProfileSync(
     return null;
   }
   try {
+    const allowAbsolute = Boolean(spec.adoptedFromLegacy);
     const configuredGatewayPort = readGatewayPortFromConfigSync(
-      resolveProfileComponentPath(profileRoot, spec.roots.config),
+      resolveProfileComponentPath(profileRoot, spec.roots.config, { allowAbsolute }),
     );
     return buildResolvedManagedProfile(spec, profileRoot, configuredGatewayPort);
   } catch (err) {
@@ -335,7 +366,7 @@ function findLegacyExistingStateDir(
   return (
     candidates.find((candidate) => {
       try {
-        if (!fs.existsSync(candidate)) {
+        if (!fs.existsSync(candidate) || !isSafeLegacyRoot(candidate, effectiveHome)) {
           return false;
         }
         if (id !== DEFAULT_PROFILE_ID) {
@@ -591,7 +622,11 @@ export async function writeManagedProfileSpec(
   const resolved = buildResolvedManagedProfile(
     spec,
     profileRoot,
-    readGatewayPortFromConfigSync(resolveProfileComponentPath(profileRoot, spec.roots.config)),
+    readGatewayPortFromConfigSync(
+      resolveProfileComponentPath(profileRoot, spec.roots.config, {
+        allowAbsolute: Boolean(spec.adoptedFromLegacy),
+      }),
+    ),
   );
   await fsp.mkdir(path.dirname(resolved.configPath), { recursive: true, mode: 0o700 });
   await fsp.mkdir(resolved.stateDir, { recursive: true, mode: 0o700 });

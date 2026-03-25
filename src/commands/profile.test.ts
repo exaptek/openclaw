@@ -118,6 +118,29 @@ describe("profile commands", () => {
     await expect(fs.stat(path.join(clone.stateDir, "logs"))).rejects.toThrow();
   });
 
+  it("skips symlinked state entries during clone", async () => {
+    const root = await fs.mkdtemp(path.join(process.cwd(), ".tmp-profile-clone-symlink-"));
+    process.env.OPENCLAW_HOME = root;
+    const runtime = createNonExitingRuntime();
+
+    await profileCreateCommand(runtime, "source", {});
+    const source = await readManagedProfile("source", process.env, () => root);
+    if (!source) {
+      throw new Error("source profile missing");
+    }
+    await fs.writeFile(path.join(source.stateDir, "safe.json"), "{}", "utf8");
+    await fs.symlink("/etc/hosts", path.join(source.stateDir, "leak.txt"));
+
+    await profileCloneCommand(runtime, "source", "clone", {});
+
+    const clone = await readManagedProfile("clone", process.env, () => root);
+    if (!clone) {
+      throw new Error("clone profile missing");
+    }
+    await expect(fs.stat(path.join(clone.stateDir, "safe.json"))).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(clone.stateDir, "leak.txt"))).rejects.toThrow();
+  });
+
   it("doctor warns when config workspace escapes the managed workspace root", async () => {
     const root = await fs.mkdtemp(path.join(process.cwd(), ".tmp-profile-doctor-"));
     process.env.OPENCLAW_HOME = root;
@@ -167,6 +190,35 @@ describe("profile commands", () => {
     expect(managed?.stateDir).toBe(legacyRoot);
     expect(managed?.configPath).toBe(path.join(legacyRoot, "openclaw.json"));
     await expect(fs.stat(path.join(legacyRoot, "credentials", "oauth.json"))).resolves.toBeTruthy();
+  });
+
+  it("refuses to import a symlinked legacy profile root", async () => {
+    const root = await fs.mkdtemp(path.join(process.cwd(), ".tmp-profile-import-symlink-"));
+    process.env.OPENCLAW_HOME = root;
+    const runtime = createNonExitingRuntime();
+    const external = await fs.mkdtemp(path.join(process.cwd(), ".tmp-profile-external-"));
+    await fs.symlink(external, path.join(root, ".openclaw-legacy"));
+
+    await expect(profileImportCommand(runtime, "legacy", {})).rejects.toThrow(
+      /legacy profile not found/i,
+    );
+  });
+
+  it("treats absolute managed-native roots as invalid manifests", async () => {
+    const root = await fs.mkdtemp(path.join(process.cwd(), ".tmp-profile-absolute-roots-"));
+    process.env.OPENCLAW_HOME = root;
+    const runtime = createNonExitingRuntime();
+
+    await profileCreateCommand(runtime, "native", {});
+    const manifestPath = path.join(root, ".openclaw", "profiles", "native", "profile.json");
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as {
+      roots: { config: string; state: string; workspace: string };
+    };
+    manifest.roots.config = "/tmp/escape-config.json";
+    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+
+    const managed = await readManagedProfile("native", process.env, () => root);
+    expect(managed?.warnings.join("\n")).toContain("Absolute profile paths are not allowed");
   });
 
   it("refuses to create a managed profile when a same-id legacy profile exists", async () => {
