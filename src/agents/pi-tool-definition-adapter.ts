@@ -49,15 +49,54 @@ function isLegacyToolExecuteArgs(args: ToolExecuteArgsAny): args is ToolExecuteA
   return isAbortSignal(fifth);
 }
 
+const TOOL_ERROR_MESSAGE_MAX_LEN = 2000;
+
 function describeToolExecutionError(err: unknown): {
   message: string;
   stack?: string;
 } {
-  if (err instanceof Error) {
-    const message = err.message?.trim() ? err.message : String(err);
-    return { message, stack: err.stack };
+  if (!(err instanceof Error)) {
+    return { message: String(err) };
   }
-  return { message: String(err) };
+
+  const segments: string[] = [];
+  const seen = new Set<unknown>();
+  let cur: unknown = err;
+  let depth = 0;
+  const maxDepth = 6;
+  const maxAggregateErrors = 8;
+
+  while (cur instanceof Error && depth < maxDepth && !seen.has(cur)) {
+    seen.add(cur);
+    const msg = cur.message?.trim();
+    if (msg) {
+      segments.push(depth === 0 ? msg : `cause: ${msg}`);
+    }
+    if (cur instanceof AggregateError && Array.isArray(cur.errors)) {
+      for (let i = 0; i < Math.min(cur.errors.length, maxAggregateErrors); i++) {
+        const sub = cur.errors[i];
+        if (sub instanceof Error) {
+          const s = sub.message?.trim();
+          if (s) {
+            segments.push(`agg[${i}]: ${s}`);
+          }
+        }
+      }
+    }
+    const next = (cur as Error & { cause?: unknown }).cause;
+    if (next === undefined || next === cur) {
+      break;
+    }
+    cur = next;
+    depth++;
+  }
+
+  const joined = segments.length > 0 ? segments.join(" | ") : err.message?.trim() || String(err);
+  const message =
+    joined.length > TOOL_ERROR_MESSAGE_MAX_LEN
+      ? `${joined.slice(0, TOOL_ERROR_MESSAGE_MAX_LEN - 1)}…`
+      : joined;
+  return { message, stack: err.stack };
 }
 
 function normalizeToolExecutionResult(params: {

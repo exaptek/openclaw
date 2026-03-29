@@ -12,6 +12,19 @@ function createPublicLookupMock(): LookupFn {
 }
 
 describe("ssrf pinning", () => {
+  it("retries DNS lookup on transient EAI_AGAIN", async () => {
+    const err = Object.assign(new Error("temporary failure"), { code: "EAI_AGAIN" });
+    const lookup = vi
+      .fn()
+      .mockRejectedValueOnce(err)
+      .mockRejectedValueOnce(err)
+      .mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }]) as unknown as LookupFn;
+
+    const pinned = await resolvePinnedHostname("example.com", lookup);
+    expect(pinned.addresses).toEqual(["93.184.216.34"]);
+    expect(lookup).toHaveBeenCalledTimes(3);
+  });
+
   it("pins resolved addresses for the target hostname", async () => {
     const lookup = vi.fn(async () => [
       { address: "93.184.216.34", family: 4 },

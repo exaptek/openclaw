@@ -56,6 +56,31 @@ describe("pi tool definition adapter", () => {
     });
   });
 
+  it("includes nested error cause in tool error message (fetch/DNS/TLS)", async () => {
+    const tool = {
+      name: "web_fetch",
+      label: "Web Fetch",
+      description: "fetch",
+      parameters: Type.Object({}),
+      execute: async () => {
+        const inner = new Error("getaddrinfo EAI_AGAIN example.com");
+        (inner as NodeJS.ErrnoException).code = "EAI_AGAIN";
+        const outer = new Error("fetch failed");
+        (outer as Error & { cause?: unknown }).cause = inner;
+        throw outer;
+      },
+    } satisfies AgentTool;
+
+    const result = await executeTool(tool, "call-cause");
+    expect(result.details).toMatchObject({
+      status: "error",
+      tool: "web_fetch",
+    });
+    const errMsg = (result.details as { error?: string }).error ?? "";
+    expect(errMsg).toContain("fetch failed");
+    expect(errMsg).toContain("getaddrinfo EAI_AGAIN");
+  });
+
   it("coerces details-only tool results to include content", async () => {
     const tool = {
       name: "memory_query",

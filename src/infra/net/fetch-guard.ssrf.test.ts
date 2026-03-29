@@ -178,6 +178,22 @@ describe("fetchWithSsrFGuard hardening", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("includes host, url, and audit context when DNS lookup fails before fetch", async () => {
+    const fetchImpl = vi.fn();
+    const lookupFn = vi.fn().mockRejectedValue(new Error("lookup failed")) as LookupFn;
+    await expect(
+      fetchWithSsrFGuard({
+        url: "https://public.example/resource",
+        fetchImpl,
+        lookupFn,
+        auditContext: "web_fetch",
+      }),
+    ).rejects.toThrow(
+      /web_fetch: failed for host=public\.example url=https:\/\/public\.example\/resource/,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("does not let wildcard allowlists match the apex host", async () => {
     const fetchImpl = vi.fn();
     await expect(

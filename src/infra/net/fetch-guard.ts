@@ -228,13 +228,22 @@ export async function fetchWithSsrFGuard(params: GuardedFetchOptions): Promise<G
         release: async () => release(dispatcher),
       };
     } catch (err) {
+      const auditLabel = params.auditContext ?? "url-fetch";
       if (err instanceof SsrFBlockedError) {
-        const context = params.auditContext ?? "url-fetch";
         logWarn(
-          `security: blocked URL fetch (${context}) target=${parsedUrl.origin}${parsedUrl.pathname} reason=${err.message}`,
+          `security: blocked URL fetch (${auditLabel}) target=${parsedUrl.origin}${parsedUrl.pathname} reason=${err.message}`,
         );
       }
       await release(dispatcher);
+      if (err instanceof SsrFBlockedError) {
+        throw err;
+      }
+      if (err instanceof Error) {
+        throw new Error(
+          `${auditLabel}: failed for host=${parsedUrl.hostname} url=${parsedUrl.href}: ${err.message}`,
+          { cause: err },
+        );
+      }
       throw err;
     }
   }
