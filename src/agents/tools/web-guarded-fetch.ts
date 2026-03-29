@@ -5,6 +5,7 @@ import {
   withStrictGuardedFetchMode,
   withTrustedEnvProxyGuardedFetchMode,
 } from "../../infra/net/fetch-guard.js";
+import { hasProxyEnvConfigured } from "../../infra/net/proxy-env.js";
 import type { SsrFPolicy } from "../../infra/net/ssrf.js";
 
 const WEB_TOOLS_TRUSTED_NETWORK_SSRF_POLICY: SsrFPolicy = {
@@ -42,10 +43,19 @@ export async function fetchWithWebToolsNetworkGuard(
     ...rest,
     timeoutMs: resolveTimeoutMs({ timeoutMs: rest.timeoutMs, timeoutSeconds }),
   };
+  // Strict mode defaults to a direct pinned Agent. Mandatory-proxy sandboxes (OpenShell,
+  // etc.) block non-proxy egress, so HTTPS times out after DNS. Route strict web_fetch
+  // through HTTP(S)_PROXY while keeping pinned DNS when proxy env is set.
+  const dispatcherPolicy =
+    resolved.dispatcherPolicy ??
+    (!useEnvProxy && hasProxyEnvConfigured() && resolved.pinDns !== false
+      ? ({ mode: "env-proxy" } as const)
+      : undefined);
+  const withDispatcher = { ...resolved, ...(dispatcherPolicy ? { dispatcherPolicy } : {}) };
   return fetchWithSsrFGuard(
     useEnvProxy
-      ? withTrustedEnvProxyGuardedFetchMode(resolved)
-      : withStrictGuardedFetchMode(resolved),
+      ? withTrustedEnvProxyGuardedFetchMode(withDispatcher)
+      : withStrictGuardedFetchMode(withDispatcher),
   );
 }
 
