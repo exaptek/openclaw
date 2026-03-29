@@ -13,7 +13,7 @@ import {
   parseLooseIpAddress,
 } from "../../shared/net/ip.js";
 import { normalizeHostname } from "./hostname.js";
-import { hasProxyEnvConfigured } from "./proxy-env.js";
+import { hasEnvHttpProxyConfigured, hasProxyEnvConfigured } from "./proxy-env.js";
 import { loadUndiciRuntimeDeps } from "./undici-runtime.js";
 
 type LookupCallback = (
@@ -327,24 +327,33 @@ async function resolveHostnameViaGoogleDnsJson(hostname: string): Promise<Lookup
   if (typeof fetchImpl !== "function") {
     throw new Error("fetch is not available for DNS-over-HTTPS fallback");
   }
-  const [aResp, aaaaResp] = await Promise.all([
-    fetchImpl(`${GOOGLE_DNS_JSON_BASE}?name=${q}&type=A`),
-    fetchImpl(`${GOOGLE_DNS_JSON_BASE}?name=${q}&type=AAAA`),
-  ]);
-  if (!aResp.ok && !aaaaResp.ok) {
-    throw new Error(
-      `Google DNS JSON HTTP ${aResp.status} / ${aaaaResp.status} (allowlist dns.google for openclaw/node)`,
-    );
+  // Gateway and other entrypoints do not always install EnvHttpProxyAgent as the global
+  // undici dispatcher; OpenShell sandboxes require CONNECT via HTTP(S)_PROXY for outbound HTTPS.
+  const { EnvHttpProxyAgent } = loadUndiciRuntimeDeps();
+  const dispatcher = hasEnvHttpProxyConfigured("https") ? new EnvHttpProxyAgent() : undefined;
+  const init: RequestInit & { dispatcher?: Dispatcher } = dispatcher ? { dispatcher } : {};
+  try {
+    const [aResp, aaaaResp] = await Promise.all([
+      fetchImpl(`${GOOGLE_DNS_JSON_BASE}?name=${q}&type=A`, init),
+      fetchImpl(`${GOOGLE_DNS_JSON_BASE}?name=${q}&type=AAAA`, init),
+    ]);
+    if (!aResp.ok && !aaaaResp.ok) {
+      throw new Error(
+        `Google DNS JSON HTTP ${aResp.status} / ${aaaaResp.status} (allowlist dns.google for openclaw/node)`,
+      );
+    }
+    const [aJson, aaaaJson] = (await Promise.all([aResp.json(), aaaaResp.json()])) as [
+      GoogleDnsJsonResponse,
+      GoogleDnsJsonResponse,
+    ];
+    const merged = [...parseGoogleDnsJsonRecords(aJson), ...parseGoogleDnsJsonRecords(aaaaJson)];
+    if (merged.length === 0) {
+      throw new Error(`Unable to resolve hostname: ${hostname}`);
+    }
+    return merged;
+  } finally {
+    await closeDispatcher(dispatcher ?? null);
   }
-  const [aJson, aaaaJson] = (await Promise.all([aResp.json(), aaaaResp.json()])) as [
-    GoogleDnsJsonResponse,
-    GoogleDnsJsonResponse,
-  ];
-  const merged = [...parseGoogleDnsJsonRecords(aJson), ...parseGoogleDnsJsonRecords(aaaaJson)];
-  if (merged.length === 0) {
-    throw new Error(`Unable to resolve hostname: ${hostname}`);
-  }
-  return merged;
 }
 
 /** Fewer attempts so we reach DNS-over-HTTPS quickly when getaddrinfo stalls per try. */

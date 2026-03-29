@@ -90,6 +90,10 @@ describe("ssrf Google DNS JSON fallback", () => {
     expect(pinned.addresses).toEqual(["93.184.216.34"]);
     expect(lookupImpl).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalled();
+    // Gateway does not set global EnvHttpProxyAgent; DoH must pass dispatcher explicitly.
+    for (const call of fetchMock.mock.calls) {
+      expect(call[1]).toEqual(expect.objectContaining({ dispatcher: expect.anything() }));
+    }
   });
 
   it("uses dns.google JSON when lookup and resolve4/6 fail", async () => {
