@@ -34,6 +34,8 @@ export type NetworkApprovalWaitGateParams<T> = {
 
 /**
  * Shared wait gate for sandboxed web tools: enqueue via `sandbox_network_denied`, poll `resolved.json`, retry once.
+ * The NemoClaw `sandbox_network_denied` handler turns that hook into `enqueueNetworkApprovalOutbound`
+ * → outbound queue → host relay → **telegram-reply** Lambda (same ARN as `AGENT_OUTPUT_LAMBDA_ARN`).
  * Returns `null` when the gate does not apply (caller should rethrow `error`).
  */
 export async function maybeAwaitNetworkApprovalAndRetry<T>(
