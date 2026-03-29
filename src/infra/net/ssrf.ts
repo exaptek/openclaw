@@ -1,6 +1,7 @@
 import { lookup as dnsLookupCb, type LookupAddress } from "node:dns";
 import { lookup as dnsLookup, resolve4, resolve6 } from "node:dns/promises";
 import type { Dispatcher } from "undici";
+import { logWarn } from "../../logger.js";
 import {
   extractEmbeddedIpv4FromIpv6,
   isBlockedSpecialUseIpv4Address,
@@ -294,6 +295,37 @@ export type PinnedDispatcherPolicy =
 /** Transient resolver failures in k8s / c-ares; retry before surfacing to web_fetch. */
 const RETRYABLE_DNS_CODES = new Set(["EAI_AGAIN", "ETIMEDOUT", "EBUSY"]);
 
+function dnsEnvSnapshot(): string {
+  return [
+    `hasProxyEnv=${hasProxyEnvConfigured()}`,
+    `hasHttpsProxyEnv=${hasEnvHttpProxyConfigured("https")}`,
+    `NODE_USE_ENV_PROXY=${process.env.NODE_USE_ENV_PROXY ?? "(unset)"}`,
+  ].join(" ");
+}
+
+function logDnsSsrF(message: string): void {
+  logWarn(`dns:ssrf: ${message}`);
+}
+
+function formatErrBrief(err: unknown): string {
+  if (err instanceof Error) {
+    const errno = err as NodeJS.ErrnoException;
+    const code = errno.code ? ` code=${errno.code}` : "";
+    return `${err.name}: ${err.message}${code}`;
+  }
+  return String(err);
+}
+
+function summarizeAddresses(records: readonly LookupAddress[], max = 12): string {
+  if (records.length === 0) {
+    return "(none)";
+  }
+  const slice = records.slice(0, max);
+  const parts = slice.map((r) => `${r.address}@${r.family}`);
+  const more = records.length > max ? ` +${records.length - max} more` : "";
+  return `${parts.join(", ")}${more}`;
+}
+
 /** Google public DNS JSON API (HTTPS). Used when UDP/TCP DNS from the pod is blocked or flaky. */
 const GOOGLE_DNS_JSON_BASE = "https://dns.google/resolve";
 
@@ -331,12 +363,18 @@ async function resolveHostnameViaGoogleDnsJson(hostname: string): Promise<Lookup
   // undici dispatcher; OpenShell sandboxes require CONNECT via HTTP(S)_PROXY for outbound HTTPS.
   const { EnvHttpProxyAgent } = loadUndiciRuntimeDeps();
   const dispatcher = hasEnvHttpProxyConfigured("https") ? new EnvHttpProxyAgent() : undefined;
+  logDnsSsrF(
+    `doh: start host=${hostname} dispatcher=${dispatcher ? "EnvHttpProxyAgent" : "default"} ${dnsEnvSnapshot()}`,
+  );
   const init: RequestInit & { dispatcher?: Dispatcher } = dispatcher ? { dispatcher } : {};
   try {
     const [aResp, aaaaResp] = await Promise.all([
       fetchImpl(`${GOOGLE_DNS_JSON_BASE}?name=${q}&type=A`, init),
       fetchImpl(`${GOOGLE_DNS_JSON_BASE}?name=${q}&type=AAAA`, init),
     ]);
+    logDnsSsrF(
+      `doh: http status A=${aResp.status} AAAA=${aaaaResp.status} okA=${aResp.ok} okAAAA=${aaaaResp.ok} host=${hostname}`,
+    );
     if (!aResp.ok && !aaaaResp.ok) {
       throw new Error(
         `Google DNS JSON HTTP ${aResp.status} / ${aaaaResp.status} (allowlist dns.google for openclaw/node)`,
@@ -348,9 +386,16 @@ async function resolveHostnameViaGoogleDnsJson(hostname: string): Promise<Lookup
     ];
     const merged = [...parseGoogleDnsJsonRecords(aJson), ...parseGoogleDnsJsonRecords(aaaaJson)];
     if (merged.length === 0) {
+      logDnsSsrF(
+        `doh: empty Answer after parse host=${hostname} jsonStatus A=${aJson.Status} AAAA=${aaaaJson.Status}`,
+      );
       throw new Error(`Unable to resolve hostname: ${hostname}`);
     }
+    logDnsSsrF(`doh: ok host=${hostname} records=${summarizeAddresses(merged)}`);
     return merged;
+  } catch (e) {
+    logDnsSsrF(`doh: failed host=${hostname} err=${formatErrBrief(e)}`);
+    throw e;
   } finally {
     await closeDispatcher(dispatcher ?? null);
   }
@@ -374,6 +419,9 @@ function lookupWithTimeout(
 ): Promise<LookupAddress[]> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
+      logDnsSsrF(
+        `lookup: timeout after ${LOOKUP_PER_ATTEMPT_TIMEOUT_MS}ms host=${hostname} (synthetic ETIMEDOUT)`,
+      );
       reject(
         Object.assign(new Error(`dns.lookup timed out after ${LOOKUP_PER_ATTEMPT_TIMEOUT_MS}ms`), {
           code: "ETIMEDOUT",
@@ -398,6 +446,7 @@ async function lookupDnsWithRetry(
   opts: { all: true },
   maxAttempts = LOOKUP_MAX_ATTEMPTS,
 ): Promise<LookupAddress[]> {
+  logDnsSsrF(`lookup: dns.lookup with retry start host=${hostname} maxAttempts=${maxAttempts}`);
   let lastErr: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -408,12 +457,20 @@ async function lookupDnsWithRetry(
       if (results.length === 0) {
         throw new Error(`Unable to resolve hostname: ${hostname}`);
       }
+      logDnsSsrF(
+        `lookup: dns.lookup ok host=${hostname} attempt=${attempt}/${maxAttempts} records=${summarizeAddresses(results)}`,
+      );
       return results;
     } catch (e) {
       lastErr = e;
       const code = (e as NodeJS.ErrnoException)?.code;
+      logDnsSsrF(
+        `lookup: dns.lookup fail host=${hostname} attempt=${attempt}/${maxAttempts} err=${formatErrBrief(e)} retryable=${code ? RETRYABLE_DNS_CODES.has(code) : false}`,
+      );
       if (code && RETRYABLE_DNS_CODES.has(code) && attempt < maxAttempts) {
-        await new Promise((r) => setTimeout(r, backoffMsForAttempt(attempt)));
+        const delay = backoffMsForAttempt(attempt);
+        logDnsSsrF(`lookup: backoff ${delay}ms before retry host=${hostname}`);
+        await new Promise((r) => setTimeout(r, delay));
         continue;
       }
       throw e;
@@ -431,6 +488,9 @@ function isBenignDnsMiss(code: string | undefined): boolean {
  * queries often still succeed. Merge IPv4 first to match dedupeAndPreferIpv4.
  */
 async function resolveHostnameViaDnsProtocol(hostname: string): Promise<LookupAddress[]> {
+  logDnsSsrF(
+    `proto: resolve4/resolve6 start host=${hostname} maxAttempts=${PROTOCOL_RESOLVE_MAX_ATTEMPTS}`,
+  );
   let lastErr: unknown;
   for (let attempt = 1; attempt <= PROTOCOL_RESOLVE_MAX_ATTEMPTS; attempt++) {
     try {
@@ -453,14 +513,22 @@ async function resolveHostnameViaDnsProtocol(hostname: string): Promise<LookupAd
         ...v6.map((address) => ({ address, family: 6 as const })),
       ];
       if (results.length > 0) {
+        logDnsSsrF(
+          `proto: ok host=${hostname} attempt=${attempt} records=${summarizeAddresses(results)}`,
+        );
         return results;
       }
       throw new Error(`Unable to resolve hostname: ${hostname}`);
     } catch (e) {
       lastErr = e;
       const code = (e as NodeJS.ErrnoException)?.code;
+      logDnsSsrF(
+        `proto: fail host=${hostname} attempt=${attempt}/${PROTOCOL_RESOLVE_MAX_ATTEMPTS} err=${formatErrBrief(e)}`,
+      );
       if (code && RETRYABLE_DNS_CODES.has(code) && attempt < PROTOCOL_RESOLVE_MAX_ATTEMPTS) {
-        await new Promise((r) => setTimeout(r, backoffMsForAttempt(attempt)));
+        const delay = backoffMsForAttempt(attempt);
+        logDnsSsrF(`proto: backoff ${delay}ms host=${hostname}`);
+        await new Promise((r) => setTimeout(r, delay));
         continue;
       }
       throw e;
@@ -481,37 +549,62 @@ async function lookupDnsWithRetryAndProtocolFallback(
   hostname: string,
   opts: { all: true },
 ): Promise<LookupAddress[]> {
+  logDnsSsrF(`chain: start host=${hostname} ${dnsEnvSnapshot()}`);
   let dohPreflightAttempted = false;
   let dohPreflightErr: unknown;
 
   // When HTTP(S)_PROXY is set (OpenShell sandboxes), skip flaky local dns.lookup first:
   // c-ares + ndots/search paths often return EAI_AGAIN while CONNECT to dns.google works.
   if (hasProxyEnvConfigured()) {
+    logDnsSsrF(`chain: proxy env set — trying DoH preflight before dns.lookup host=${hostname}`);
     try {
-      return await resolveHostnameViaGoogleDnsJson(hostname);
+      const out = await resolveHostnameViaGoogleDnsJson(hostname);
+      logDnsSsrF(`chain: exit via DoH preflight host=${hostname}`);
+      return out;
     } catch (doh) {
       dohPreflightAttempted = true;
       dohPreflightErr = doh;
+      logDnsSsrF(
+        `chain: DoH preflight failed host=${hostname} err=${formatErrBrief(doh)} — falling back to dns.lookup`,
+      );
     }
+  } else {
+    logDnsSsrF(`chain: no proxy env — skipping DoH preflight host=${hostname}`);
   }
 
   try {
-    return await lookupDnsWithRetry(lookupFn, hostname, opts);
+    const out = await lookupDnsWithRetry(lookupFn, hostname, opts);
+    logDnsSsrF(`chain: exit via dns.lookup host=${hostname}`);
+    return out;
   } catch (e) {
     const code = (e as NodeJS.ErrnoException)?.code;
+    logDnsSsrF(
+      `chain: dns.lookup threw host=${hostname} code=${String(code)} retryable=${code ? RETRYABLE_DNS_CODES.has(code) : false} err=${formatErrBrief(e)} dohPreflightAttempted=${dohPreflightAttempted}`,
+    );
     if (code && RETRYABLE_DNS_CODES.has(code)) {
       if (!dohPreflightAttempted) {
         // Prefer DNS-over-HTTPS: UDP DNS to resolvers often stalls while DoH via proxy works.
+        logDnsSsrF(`chain: retry path — DoH then proto (preflight was skipped) host=${hostname}`);
         let dohErr: unknown;
         try {
-          return await resolveHostnameViaGoogleDnsJson(hostname);
+          const out = await resolveHostnameViaGoogleDnsJson(hostname);
+          logDnsSsrF(`chain: exit via DoH after lookup fail host=${hostname}`);
+          return out;
         } catch (doh) {
           dohErr = doh;
+          logDnsSsrF(
+            `chain: DoH after lookup fail failed host=${hostname} err=${formatErrBrief(doh)}`,
+          );
           let protoErr: unknown;
           try {
-            return await resolveHostnameViaDnsProtocol(hostname);
+            const out = await resolveHostnameViaDnsProtocol(hostname);
+            logDnsSsrF(`chain: exit via proto after lookup+DoH fail host=${hostname}`);
+            return out;
           } catch (proto) {
             protoErr = proto;
+            logDnsSsrF(
+              `chain: aggregate failure (lookup+DoH+proto) host=${hostname} proto=${formatErrBrief(proto)}`,
+            );
             const chain: Error[] = [];
             if (e instanceof Error) {
               chain.push(e);
@@ -535,11 +628,17 @@ async function lookupDnsWithRetryAndProtocolFallback(
         }
       }
 
+      logDnsSsrF(`chain: retry path — proto only (DoH preflight already failed) host=${hostname}`);
       let protoErr: unknown;
       try {
-        return await resolveHostnameViaDnsProtocol(hostname);
+        const out = await resolveHostnameViaDnsProtocol(hostname);
+        logDnsSsrF(`chain: exit via proto after preflight-DoH-fail host=${hostname}`);
+        return out;
       } catch (proto) {
         protoErr = proto;
+        logDnsSsrF(
+          `chain: aggregate failure (lookup+preflight-DoH+proto) host=${hostname} proto=${formatErrBrief(proto)}`,
+        );
         const chain: Error[] = [];
         if (e instanceof Error) {
           chain.push(e);
@@ -561,6 +660,7 @@ async function lookupDnsWithRetryAndProtocolFallback(
         );
       }
     }
+    logDnsSsrF(`chain: non-retryable or missing code — rethrow host=${hostname}`);
     throw e;
   }
 }
@@ -594,8 +694,13 @@ export async function resolvePinnedHostnameWithPolicy(
 
   const hostnameAllowlist = normalizeHostnameAllowlist(params.policy?.hostnameAllowlist);
   const skipPrivateNetworkChecks = shouldSkipPrivateNetworkChecks(normalized, params.policy);
+  const allowlistLen = hostnameAllowlist.length;
+  logDnsSsrF(
+    `pin: resolvePinnedHostnameWithPolicy input=${hostname} normalized=${normalized} allowlistPatterns=${allowlistLen} skipPrivate=${skipPrivateNetworkChecks} ${dnsEnvSnapshot()}`,
+  );
 
   if (!matchesHostnameAllowlist(normalized, hostnameAllowlist)) {
+    logDnsSsrF(`pin: blocked by hostname allowlist host=${normalized}`);
     throw new SsrFBlockedError(`Blocked hostname (not in allowlist): ${hostname}`);
   }
 
@@ -607,6 +712,7 @@ export async function resolvePinnedHostnameWithPolicy(
   const lookupFn = params.lookupFn ?? dnsLookup;
   const results = await lookupDnsWithRetryAndProtocolFallback(lookupFn, normalized, { all: true });
   if (results.length === 0) {
+    logDnsSsrF(`pin: zero DNS results host=${normalized}`);
     throw new Error(`Unable to resolve hostname: ${hostname}`);
   }
 
@@ -619,9 +725,15 @@ export async function resolvePinnedHostnameWithPolicy(
   // families so Happy Eyeballs and pinned round-robin both attempt IPv4 first.
   const addresses = dedupeAndPreferIpv4(results);
   if (addresses.length === 0) {
+    logDnsSsrF(`pin: dedupe left zero addresses host=${normalized}`);
     throw new Error(`Unable to resolve hostname: ${hostname}`);
   }
 
+  logDnsSsrF(
+    `pin: success host=${normalized} addresses=${summarizeAddresses(
+      addresses.map((a) => ({ address: a, family: a.includes(":") ? 6 : 4 })),
+    )}`,
+  );
   return {
     hostname: normalized,
     addresses,
