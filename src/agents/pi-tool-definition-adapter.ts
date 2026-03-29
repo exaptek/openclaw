@@ -13,6 +13,7 @@ import {
   runBeforeToolCallHook,
 } from "./pi-tools.before-tool-call.js";
 import { normalizeToolName } from "./tool-policy.js";
+import { toolRuntimeContext, type ToolRuntimeContext } from "./tool-runtime-context.js";
 import { jsonResult, payloadTextResult } from "./tools/common.js";
 
 type AnyAgentTool = AgentTool;
@@ -153,7 +154,15 @@ function splitToolExecuteArgs(args: ToolExecuteArgsAny): {
   };
 }
 
-export function toToolDefinitions(tools: AnyAgentTool[]): ToolDefinition[] {
+export type ToolDefinitionAdapterOptions = {
+  /** Static per-run identity (merged with toolCallId for AsyncLocalStorage). */
+  toolRuntime?: Omit<ToolRuntimeContext, "toolCallId">;
+};
+
+export function toToolDefinitions(
+  tools: AnyAgentTool[],
+  adapterOptions?: ToolDefinitionAdapterOptions,
+): ToolDefinition[] {
   return tools.map((tool) => {
     const name = tool.name || "tool";
     const normalizedName = normalizeToolName(name);
@@ -166,24 +175,30 @@ export function toToolDefinitions(tools: AnyAgentTool[]): ToolDefinition[] {
       execute: async (...args: ToolExecuteArgs): Promise<AgentToolResult<unknown>> => {
         const { toolCallId, params, onUpdate, signal } = splitToolExecuteArgs(args);
         let executeParams = params;
+        const runtimeStore: ToolRuntimeContext = {
+          ...adapterOptions?.toolRuntime,
+          toolCallId,
+        };
         try {
-          if (!beforeHookWrapped) {
-            const hookOutcome = await runBeforeToolCallHook({
-              toolName: name,
-              params,
-              toolCallId,
-            });
-            if (hookOutcome.blocked) {
-              throw new Error(hookOutcome.reason);
+          return await toolRuntimeContext.run(runtimeStore, async () => {
+            if (!beforeHookWrapped) {
+              const hookOutcome = await runBeforeToolCallHook({
+                toolName: name,
+                params,
+                toolCallId,
+              });
+              if (hookOutcome.blocked) {
+                throw new Error(hookOutcome.reason);
+              }
+              executeParams = hookOutcome.params;
             }
-            executeParams = hookOutcome.params;
-          }
-          const rawResult = await tool.execute(toolCallId, executeParams, signal, onUpdate);
-          const result = normalizeToolExecutionResult({
-            toolName: normalizedName,
-            result: rawResult,
+            const rawResult = await tool.execute(toolCallId, executeParams, signal, onUpdate);
+            const result = normalizeToolExecutionResult({
+              toolName: normalizedName,
+              result: rawResult,
+            });
+            return result;
           });
-          return result;
         } catch (err) {
           if (signal?.aborted) {
             throw err;

@@ -6,6 +6,7 @@ import { logDebug } from "../../logger.js";
 import type { RuntimeWebFetchFirecrawlMetadata } from "../../secrets/runtime-web-tools.js";
 import { wrapExternalContent, wrapWebContent } from "../../security/external-content.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
+import { maybeAwaitNetworkApprovalAndRetry } from "../network-approval-wait-gate.js";
 import { stringEnum } from "../schema/typebox.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readNumberParam, readStringParam } from "./common.js";
@@ -458,6 +459,11 @@ type WebFetchRuntimeParams = FirecrawlRuntimeParams & {
   cacheTtlMs: number;
   userAgent: string;
   readabilityEnabled: boolean;
+  /** When true, do not enter the network approval wait / retry gate (prevents loops). */
+  skipNetworkApprovalWait?: boolean;
+  sandboxed?: boolean;
+  signal?: AbortSignal;
+  toolCallId?: string;
 };
 
 function toFirecrawlContentParams(
@@ -573,6 +579,20 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
     if (payload) {
       return payload;
     }
+    if (!params.skipNetworkApprovalWait) {
+      const retried = await maybeAwaitNetworkApprovalAndRetry({
+        toolName: "web_fetch",
+        error,
+        sandboxed: params.sandboxed,
+        signal: params.signal,
+        urlForApproval: params.url,
+        toolParams: { url: params.url },
+        retry: () => runWebFetch({ ...params, skipNetworkApprovalWait: true }),
+      });
+      if (retried !== null) {
+        return retried;
+      }
+    }
     throw error;
   }
 
@@ -597,7 +617,22 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
         maxChars: DEFAULT_ERROR_MAX_CHARS,
       });
       const wrappedDetail = wrapWebFetchContent(detail || res.statusText, DEFAULT_ERROR_MAX_CHARS);
-      throw new Error(`Web fetch failed (${res.status}): ${wrappedDetail.text}`);
+      const httpErr = new Error(`Web fetch failed (${res.status}): ${wrappedDetail.text}`);
+      if (!params.skipNetworkApprovalWait) {
+        const retried = await maybeAwaitNetworkApprovalAndRetry({
+          toolName: "web_fetch",
+          error: httpErr,
+          sandboxed: params.sandboxed,
+          signal: params.signal,
+          urlForApproval: params.url,
+          toolParams: { url: params.url },
+          retry: () => runWebFetch({ ...params, skipNetworkApprovalWait: true }),
+        });
+        if (retried !== null) {
+          return retried;
+        }
+      }
+      throw httpErr;
     }
 
     const contentType = res.headers.get("content-type") ?? "application/octet-stream";
@@ -767,7 +802,7 @@ export function createWebFetchTool(options?: {
     description:
       "Fetch and extract readable content from a URL (HTML → markdown/text). Use for lightweight page access without browser automation.",
     parameters: WebFetchSchema,
-    execute: async (_toolCallId, args) => {
+    execute: async (toolCallId, args, signal) => {
       const params = args as Record<string, unknown>;
       const url = readStringParam(params, "url", { required: true });
       const extractMode = readStringParam(params, "extractMode") === "text" ? "text" : "markdown";
@@ -795,6 +830,9 @@ export function createWebFetchTool(options?: {
         firecrawlProxy: "auto",
         firecrawlStoreInCache: true,
         firecrawlTimeoutSeconds,
+        sandboxed: options?.sandboxed === true,
+        signal,
+        toolCallId,
       });
       return jsonResult(result);
     },

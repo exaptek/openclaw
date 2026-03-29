@@ -1415,6 +1415,7 @@ export type PluginHookName =
   | "message_sent"
   | "before_tool_call"
   | "after_tool_call"
+  | "sandbox_network_denied"
   | "tool_result_persist"
   | "before_message_write"
   | "session_start"
@@ -1443,6 +1444,7 @@ export const PLUGIN_HOOK_NAMES = [
   "message_sent",
   "before_tool_call",
   "after_tool_call",
+  "sandbox_network_denied",
   "tool_result_persist",
   "before_message_write",
   "session_start",
@@ -1752,6 +1754,28 @@ export type PluginHookAfterToolCallEvent = {
   durationMs?: number;
 };
 
+/**
+ * Emitted when a web tool (`web_fetch`, `browser`) fails in a way that looks like
+ * sandbox egress / network policy / proxy / DNS / TLS issues (same class of
+ * failures operators see in OpenShell `openshell term`).
+ */
+export type PluginHookSandboxNetworkDeniedEvent = {
+  toolName: string;
+  /** When set (e.g. network approval wait gate), integrations should use this id for pending / Telegram. */
+  approvalId?: string;
+  /** Combined error + stringified result for parsing / logging. */
+  denialText: string;
+  toolParams: Record<string, unknown>;
+  /** Request URL when available (from tool params). */
+  url?: string;
+  /** Parsed from `url` when valid. */
+  host?: string;
+  port?: number;
+  /** Typical process for outbound HTTPS from the agent (best-effort). */
+  binary: string;
+  isToolError: boolean;
+};
+
 // tool_result_persist hook
 export type PluginHookToolResultPersistContext = {
   agentId?: string;
@@ -1984,6 +2008,10 @@ export type PluginHookHandlerMap = {
   ) => Promise<PluginHookBeforeToolCallResult | void> | PluginHookBeforeToolCallResult | void;
   after_tool_call: (
     event: PluginHookAfterToolCallEvent,
+    ctx: PluginHookToolContext,
+  ) => Promise<void> | void;
+  sandbox_network_denied: (
+    event: PluginHookSandboxNetworkDeniedEvent,
     ctx: PluginHookToolContext,
   ) => Promise<void> | void;
   tool_result_persist: (

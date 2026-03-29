@@ -23,6 +23,7 @@ import {
 } from "./pi-embedded-subscribe.tools.js";
 import { inferToolMetaFromArgs } from "./pi-embedded-utils.js";
 import { consumeAdjustedParamsForToolCall } from "./pi-tools.before-tool-call.js";
+import { buildSandboxNetworkDeniedEvent } from "./sandbox-network-denied.js";
 import { buildToolMutationState, isSameToolMutationAction } from "./tool-mutation.js";
 import { normalizeToolName } from "./tool-policy.js";
 
@@ -603,5 +604,29 @@ export async function handleToolExecutionEnd(
       .catch((err) => {
         ctx.log.warn(`after_tool_call hook failed: tool=${toolName} error=${String(err)}`);
       });
+  }
+
+  if (hookRunnerAfter?.hasHooks("sandbox_network_denied")) {
+    const denied = buildSandboxNetworkDeniedEvent({
+      toolName,
+      toolParams: afterToolCallArgs,
+      isToolError,
+      sanitizedResult,
+      errorMessage: isToolError ? extractToolErrorMessage(sanitizedResult) : undefined,
+    });
+    if (denied) {
+      void hookRunnerAfter
+        .runSandboxNetworkDenied(denied, {
+          toolName,
+          agentId: ctx.params.agentId,
+          sessionKey: ctx.params.sessionKey,
+          sessionId: ctx.params.sessionId,
+          runId,
+          toolCallId,
+        })
+        .catch((err) => {
+          ctx.log.warn(`sandbox_network_denied hook failed: tool=${toolName} error=${String(err)}`);
+        });
+    }
   }
 }

@@ -27,6 +27,7 @@ import type {
   PluginHookBeforeResetEvent,
   PluginHookBeforeToolCallEvent,
   PluginHookBeforeToolCallResult,
+  PluginHookSandboxNetworkDeniedEvent,
   PluginHookGatewayContext,
   PluginHookGatewayStartEvent,
   PluginHookGatewayStopEvent,
@@ -670,6 +671,17 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
   }
 
   /**
+   * Run sandbox_network_denied hook (web_fetch / browser failures that look like egress).
+   * Runs in parallel (fire-and-forget).
+   */
+  async function runSandboxNetworkDenied(
+    event: PluginHookSandboxNetworkDeniedEvent,
+    ctx: PluginHookToolContext,
+  ): Promise<void> {
+    return runVoidHook("sandbox_network_denied", event, ctx);
+  }
+
+  /**
    * Run tool_result_persist hook.
    *
    * This hook is intentionally synchronous: it runs in hot paths where session
@@ -966,6 +978,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     // Tool hooks
     runBeforeToolCall,
     runAfterToolCall,
+    runSandboxNetworkDenied,
     runToolResultPersist,
     // Message write hooks
     runBeforeMessageWrite,

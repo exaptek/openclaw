@@ -25,6 +25,7 @@ import {
   untrackSessionBrowserTab,
 } from "../../browser/session-tab-registry.js";
 import { loadConfig } from "../../config/config.js";
+import { maybeAwaitNetworkApprovalAndRetry } from "../network-approval-wait-gate.js";
 import {
   executeActAction,
   executeConsoleAction,
@@ -127,6 +128,34 @@ function readTargetUrlParam(params: Record<string, unknown>) {
     readStringParam(params, "targetUrl") ??
     readStringParam(params, "url", { required: true, label: "targetUrl" })
   );
+}
+
+/** Best-effort URL for network approval policy when the browser tool fails with egress-like errors. */
+function tryReadBrowserUrlForApproval(params: Record<string, unknown>): string | undefined {
+  try {
+    const action =
+      readStringParam(params, "action", { required: false })?.trim().toLowerCase() ?? "";
+    if (action === "open" || action === "navigate") {
+      const u =
+        readStringParam(params, "url", { required: false }) ??
+        readStringParam(params, "targetUrl", { required: false });
+      if (u) {
+        return u;
+      }
+    }
+    if (action === "act") {
+      const request = params.request;
+      if (request && typeof request === "object") {
+        const u = (request as Record<string, unknown>).url;
+        if (typeof u === "string" && u.trim()) {
+          return u.trim();
+        }
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 const LEGACY_BROWSER_ACT_REQUEST_KEYS = [
@@ -369,6 +398,7 @@ export function createBrowserTool(opts?: {
   sandboxBridgeUrl?: string;
   allowHostControl?: boolean;
   agentSessionKey?: string;
+  sandboxed?: boolean;
 }): AnyAgentTool {
   const targetDefault = opts?.sandboxBridgeUrl ? "sandbox" : "host";
   const hostHint =
@@ -388,367 +418,389 @@ export function createBrowserTool(opts?: {
       hostHint,
     ].join(" "),
     parameters: BrowserToolSchema,
-    execute: async (_toolCallId, args) => {
-      const params = args as Record<string, unknown>;
-      const action = readStringParam(params, "action", { required: true });
-      const profile = readStringParam(params, "profile");
-      const requestedNode = readStringParam(params, "node");
-      let target = readStringParam(params, "target") as "sandbox" | "host" | "node" | undefined;
+    execute: async (_toolCallId, args, signal) => {
+      const run = async () => {
+        const params = args as Record<string, unknown>;
+        const action = readStringParam(params, "action", { required: true });
+        const profile = readStringParam(params, "profile");
+        const requestedNode = readStringParam(params, "node");
+        let target = readStringParam(params, "target") as "sandbox" | "host" | "node" | undefined;
 
-      if (requestedNode && target && target !== "node") {
-        throw new Error('node is only supported with target="node".');
-      }
-      // User-browser profiles (existing-session) are host-only.
-      const isUserBrowserProfile = shouldPreferHostForProfile(profile);
-      if (isUserBrowserProfile) {
-        if (requestedNode || target === "node") {
-          throw new Error(`profile="${profile}" only supports the local host browser.`);
+        if (requestedNode && target && target !== "node") {
+          throw new Error('node is only supported with target="node".');
         }
-        if (target === "sandbox") {
-          throw new Error(
-            `profile="${profile}" cannot use the sandbox browser; use target="host" or omit target.`,
-          );
-        }
-        if (!target && !requestedNode) {
-          target = "host";
-        }
-      }
-
-      const nodeTarget = await resolveBrowserNodeTarget({
-        requestedNode: requestedNode ?? undefined,
-        target,
-        sandboxBridgeUrl: opts?.sandboxBridgeUrl,
-      });
-
-      const resolvedTarget = target === "node" ? undefined : target;
-      const baseUrl = nodeTarget
-        ? undefined
-        : resolveBrowserBaseUrl({
-            target: resolvedTarget,
-            sandboxBridgeUrl: opts?.sandboxBridgeUrl,
-            allowHostControl: opts?.allowHostControl,
-          });
-
-      const proxyRequest = nodeTarget
-        ? async (opts: {
-            method: string;
-            path: string;
-            query?: Record<string, string | number | boolean | undefined>;
-            body?: unknown;
-            timeoutMs?: number;
-            profile?: string;
-          }) => {
-            const proxy = await callBrowserProxy({
-              nodeId: nodeTarget.nodeId,
-              method: opts.method,
-              path: opts.path,
-              query: opts.query,
-              body: opts.body,
-              timeoutMs: opts.timeoutMs,
-              profile: opts.profile,
-            });
-            const mapping = await persistProxyFiles(proxy.files);
-            applyProxyPaths(proxy.result, mapping);
-            return proxy.result;
+        // User-browser profiles (existing-session) are host-only.
+        const isUserBrowserProfile = shouldPreferHostForProfile(profile);
+        if (isUserBrowserProfile) {
+          if (requestedNode || target === "node") {
+            throw new Error(`profile="${profile}" only supports the local host browser.`);
           }
-        : null;
-
-      switch (action) {
-        case "status":
-          if (proxyRequest) {
-            return jsonResult(
-              await proxyRequest({
-                method: "GET",
-                path: "/",
-                profile,
-              }),
+          if (target === "sandbox") {
+            throw new Error(
+              `profile="${profile}" cannot use the sandbox browser; use target="host" or omit target.`,
             );
           }
-          return jsonResult(await browserToolDeps.browserStatus(baseUrl, { profile }));
-        case "start":
-          if (proxyRequest) {
-            await proxyRequest({
-              method: "POST",
-              path: "/start",
-              profile,
-            });
-            return jsonResult(
-              await proxyRequest({
-                method: "GET",
-                path: "/",
-                profile,
-              }),
-            );
+          if (!target && !requestedNode) {
+            target = "host";
           }
-          await browserToolDeps.browserStart(baseUrl, { profile });
-          return jsonResult(await browserToolDeps.browserStatus(baseUrl, { profile }));
-        case "stop":
-          if (proxyRequest) {
-            await proxyRequest({
-              method: "POST",
-              path: "/stop",
-              profile,
-            });
-            return jsonResult(
-              await proxyRequest({
-                method: "GET",
-                path: "/",
-                profile,
-              }),
-            );
-          }
-          await browserToolDeps.browserStop(baseUrl, { profile });
-          return jsonResult(await browserToolDeps.browserStatus(baseUrl, { profile }));
-        case "profiles":
-          if (proxyRequest) {
-            const result = await proxyRequest({
-              method: "GET",
-              path: "/profiles",
-            });
-            return jsonResult(result);
-          }
-          return jsonResult({ profiles: await browserToolDeps.browserProfiles(baseUrl) });
-        case "tabs":
-          return await executeTabsAction({ baseUrl, profile, proxyRequest });
-        case "open": {
-          const targetUrl = readTargetUrlParam(params);
-          if (proxyRequest) {
-            const result = await proxyRequest({
-              method: "POST",
-              path: "/tabs/open",
-              profile,
-              body: { url: targetUrl },
-            });
-            return jsonResult(result);
-          }
-          const opened = await browserToolDeps.browserOpenTab(baseUrl, targetUrl, { profile });
-          browserToolDeps.trackSessionBrowserTab({
-            sessionKey: opts?.agentSessionKey,
-            targetId: opened.targetId,
-            baseUrl,
-            profile,
-          });
-          return jsonResult(opened);
         }
-        case "focus": {
-          const targetId = readStringParam(params, "targetId", {
-            required: true,
-          });
-          if (proxyRequest) {
-            const result = await proxyRequest({
-              method: "POST",
-              path: "/tabs/focus",
-              profile,
-              body: { targetId },
+
+        const nodeTarget = await resolveBrowserNodeTarget({
+          requestedNode: requestedNode ?? undefined,
+          target,
+          sandboxBridgeUrl: opts?.sandboxBridgeUrl,
+        });
+
+        const resolvedTarget = target === "node" ? undefined : target;
+        const baseUrl = nodeTarget
+          ? undefined
+          : resolveBrowserBaseUrl({
+              target: resolvedTarget,
+              sandboxBridgeUrl: opts?.sandboxBridgeUrl,
+              allowHostControl: opts?.allowHostControl,
             });
-            return jsonResult(result);
-          }
-          await browserToolDeps.browserFocusTab(baseUrl, targetId, { profile });
-          return jsonResult({ ok: true });
-        }
-        case "close": {
-          const targetId = readStringParam(params, "targetId");
-          if (proxyRequest) {
-            const result = targetId
-              ? await proxyRequest({
-                  method: "DELETE",
-                  path: `/tabs/${encodeURIComponent(targetId)}`,
+
+        const proxyRequest = nodeTarget
+          ? async (opts: {
+              method: string;
+              path: string;
+              query?: Record<string, string | number | boolean | undefined>;
+              body?: unknown;
+              timeoutMs?: number;
+              profile?: string;
+            }) => {
+              const proxy = await callBrowserProxy({
+                nodeId: nodeTarget.nodeId,
+                method: opts.method,
+                path: opts.path,
+                query: opts.query,
+                body: opts.body,
+                timeoutMs: opts.timeoutMs,
+                profile: opts.profile,
+              });
+              const mapping = await persistProxyFiles(proxy.files);
+              applyProxyPaths(proxy.result, mapping);
+              return proxy.result;
+            }
+          : null;
+
+        switch (action) {
+          case "status":
+            if (proxyRequest) {
+              return jsonResult(
+                await proxyRequest({
+                  method: "GET",
+                  path: "/",
                   profile,
-                })
-              : await proxyRequest({
-                  method: "POST",
-                  path: "/act",
+                }),
+              );
+            }
+            return jsonResult(await browserToolDeps.browserStatus(baseUrl, { profile }));
+          case "start":
+            if (proxyRequest) {
+              await proxyRequest({
+                method: "POST",
+                path: "/start",
+                profile,
+              });
+              return jsonResult(
+                await proxyRequest({
+                  method: "GET",
+                  path: "/",
                   profile,
-                  body: { kind: "close" },
-                });
-            return jsonResult(result);
-          }
-          if (targetId) {
-            await browserToolDeps.browserCloseTab(baseUrl, targetId, { profile });
-            browserToolDeps.untrackSessionBrowserTab({
+                }),
+              );
+            }
+            await browserToolDeps.browserStart(baseUrl, { profile });
+            return jsonResult(await browserToolDeps.browserStatus(baseUrl, { profile }));
+          case "stop":
+            if (proxyRequest) {
+              await proxyRequest({
+                method: "POST",
+                path: "/stop",
+                profile,
+              });
+              return jsonResult(
+                await proxyRequest({
+                  method: "GET",
+                  path: "/",
+                  profile,
+                }),
+              );
+            }
+            await browserToolDeps.browserStop(baseUrl, { profile });
+            return jsonResult(await browserToolDeps.browserStatus(baseUrl, { profile }));
+          case "profiles":
+            if (proxyRequest) {
+              const result = await proxyRequest({
+                method: "GET",
+                path: "/profiles",
+              });
+              return jsonResult(result);
+            }
+            return jsonResult({ profiles: await browserToolDeps.browserProfiles(baseUrl) });
+          case "tabs":
+            return await executeTabsAction({ baseUrl, profile, proxyRequest });
+          case "open": {
+            const targetUrl = readTargetUrlParam(params);
+            if (proxyRequest) {
+              const result = await proxyRequest({
+                method: "POST",
+                path: "/tabs/open",
+                profile,
+                body: { url: targetUrl },
+              });
+              return jsonResult(result);
+            }
+            const opened = await browserToolDeps.browserOpenTab(baseUrl, targetUrl, { profile });
+            browserToolDeps.trackSessionBrowserTab({
               sessionKey: opts?.agentSessionKey,
-              targetId,
+              targetId: opened.targetId,
               baseUrl,
               profile,
             });
-          } else {
-            await browserToolDeps.browserAct(baseUrl, { kind: "close" }, { profile });
+            return jsonResult(opened);
           }
-          return jsonResult({ ok: true });
-        }
-        case "snapshot":
-          return await executeSnapshotAction({
-            input: params,
-            baseUrl,
-            profile,
-            proxyRequest,
-          });
-        case "screenshot": {
-          const targetId = readStringParam(params, "targetId");
-          const fullPage = Boolean(params.fullPage);
-          const ref = readStringParam(params, "ref");
-          const element = readStringParam(params, "element");
-          const type = params.type === "jpeg" ? "jpeg" : "png";
-          const result = proxyRequest
-            ? ((await proxyRequest({
+          case "focus": {
+            const targetId = readStringParam(params, "targetId", {
+              required: true,
+            });
+            if (proxyRequest) {
+              const result = await proxyRequest({
                 method: "POST",
-                path: "/screenshot",
+                path: "/tabs/focus",
                 profile,
-                body: {
+                body: { targetId },
+              });
+              return jsonResult(result);
+            }
+            await browserToolDeps.browserFocusTab(baseUrl, targetId, { profile });
+            return jsonResult({ ok: true });
+          }
+          case "close": {
+            const targetId = readStringParam(params, "targetId");
+            if (proxyRequest) {
+              const result = targetId
+                ? await proxyRequest({
+                    method: "DELETE",
+                    path: `/tabs/${encodeURIComponent(targetId)}`,
+                    profile,
+                  })
+                : await proxyRequest({
+                    method: "POST",
+                    path: "/act",
+                    profile,
+                    body: { kind: "close" },
+                  });
+              return jsonResult(result);
+            }
+            if (targetId) {
+              await browserToolDeps.browserCloseTab(baseUrl, targetId, { profile });
+              browserToolDeps.untrackSessionBrowserTab({
+                sessionKey: opts?.agentSessionKey,
+                targetId,
+                baseUrl,
+                profile,
+              });
+            } else {
+              await browserToolDeps.browserAct(baseUrl, { kind: "close" }, { profile });
+            }
+            return jsonResult({ ok: true });
+          }
+          case "snapshot":
+            return await executeSnapshotAction({
+              input: params,
+              baseUrl,
+              profile,
+              proxyRequest,
+            });
+          case "screenshot": {
+            const targetId = readStringParam(params, "targetId");
+            const fullPage = Boolean(params.fullPage);
+            const ref = readStringParam(params, "ref");
+            const element = readStringParam(params, "element");
+            const type = params.type === "jpeg" ? "jpeg" : "png";
+            const result = proxyRequest
+              ? ((await proxyRequest({
+                  method: "POST",
+                  path: "/screenshot",
+                  profile,
+                  body: {
+                    targetId,
+                    fullPage,
+                    ref,
+                    element,
+                    type,
+                  },
+                })) as Awaited<ReturnType<typeof browserScreenshotAction>>)
+              : await browserToolDeps.browserScreenshotAction(baseUrl, {
                   targetId,
                   fullPage,
                   ref,
                   element,
                   type,
-                },
-              })) as Awaited<ReturnType<typeof browserScreenshotAction>>)
-            : await browserToolDeps.browserScreenshotAction(baseUrl, {
-                targetId,
-                fullPage,
-                ref,
-                element,
-                type,
+                  profile,
+                });
+            return await browserToolDeps.imageResultFromFile({
+              label: "browser:screenshot",
+              path: result.path,
+              details: result,
+            });
+          }
+          case "navigate": {
+            const targetUrl = readTargetUrlParam(params);
+            const targetId = readStringParam(params, "targetId");
+            if (proxyRequest) {
+              const result = await proxyRequest({
+                method: "POST",
+                path: "/navigate",
                 profile,
+                body: {
+                  url: targetUrl,
+                  targetId,
+                },
               });
-          return await browserToolDeps.imageResultFromFile({
-            label: "browser:screenshot",
-            path: result.path,
-            details: result,
-          });
-        }
-        case "navigate": {
-          const targetUrl = readTargetUrlParam(params);
-          const targetId = readStringParam(params, "targetId");
-          if (proxyRequest) {
-            const result = await proxyRequest({
-              method: "POST",
-              path: "/navigate",
-              profile,
-              body: {
+              return jsonResult(result);
+            }
+            return jsonResult(
+              await browserToolDeps.browserNavigate(baseUrl, {
                 url: targetUrl,
                 targetId,
-              },
-            });
-            return jsonResult(result);
-          }
-          return jsonResult(
-            await browserToolDeps.browserNavigate(baseUrl, {
-              url: targetUrl,
-              targetId,
-              profile,
-            }),
-          );
-        }
-        case "console":
-          return await executeConsoleAction({
-            input: params,
-            baseUrl,
-            profile,
-            proxyRequest,
-          });
-        case "pdf": {
-          const targetId = typeof params.targetId === "string" ? params.targetId.trim() : undefined;
-          const result = proxyRequest
-            ? ((await proxyRequest({
-                method: "POST",
-                path: "/pdf",
                 profile,
-                body: { targetId },
-              })) as Awaited<ReturnType<typeof browserPdfSave>>)
-            : await browserToolDeps.browserPdfSave(baseUrl, { targetId, profile });
-          return {
-            content: [{ type: "text" as const, text: `FILE:${result.path}` }],
-            details: result,
-          };
-        }
-        case "upload": {
-          const paths = Array.isArray(params.paths) ? params.paths.map((p) => String(p)) : [];
-          if (paths.length === 0) {
-            throw new Error("paths required");
+              }),
+            );
           }
-          const uploadPathsResult = await resolveExistingPathsWithinRoot({
-            rootDir: DEFAULT_UPLOAD_DIR,
-            requestedPaths: paths,
-            scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
-          });
-          if (!uploadPathsResult.ok) {
-            throw new Error(uploadPathsResult.error);
-          }
-          const normalizedPaths = uploadPathsResult.paths;
-          const ref = readStringParam(params, "ref");
-          const inputRef = readStringParam(params, "inputRef");
-          const element = readStringParam(params, "element");
-          const { targetId, timeoutMs } = readOptionalTargetAndTimeout(params);
-          if (proxyRequest) {
-            const result = await proxyRequest({
-              method: "POST",
-              path: "/hooks/file-chooser",
+          case "console":
+            return await executeConsoleAction({
+              input: params,
+              baseUrl,
               profile,
-              body: {
+              proxyRequest,
+            });
+          case "pdf": {
+            const targetId =
+              typeof params.targetId === "string" ? params.targetId.trim() : undefined;
+            const result = proxyRequest
+              ? ((await proxyRequest({
+                  method: "POST",
+                  path: "/pdf",
+                  profile,
+                  body: { targetId },
+                })) as Awaited<ReturnType<typeof browserPdfSave>>)
+              : await browserToolDeps.browserPdfSave(baseUrl, { targetId, profile });
+            return {
+              content: [{ type: "text" as const, text: `FILE:${result.path}` }],
+              details: result,
+            };
+          }
+          case "upload": {
+            const paths = Array.isArray(params.paths) ? params.paths.map((p) => String(p)) : [];
+            if (paths.length === 0) {
+              throw new Error("paths required");
+            }
+            const uploadPathsResult = await resolveExistingPathsWithinRoot({
+              rootDir: DEFAULT_UPLOAD_DIR,
+              requestedPaths: paths,
+              scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
+            });
+            if (!uploadPathsResult.ok) {
+              throw new Error(uploadPathsResult.error);
+            }
+            const normalizedPaths = uploadPathsResult.paths;
+            const ref = readStringParam(params, "ref");
+            const inputRef = readStringParam(params, "inputRef");
+            const element = readStringParam(params, "element");
+            const { targetId, timeoutMs } = readOptionalTargetAndTimeout(params);
+            if (proxyRequest) {
+              const result = await proxyRequest({
+                method: "POST",
+                path: "/hooks/file-chooser",
+                profile,
+                body: {
+                  paths: normalizedPaths,
+                  ref,
+                  inputRef,
+                  element,
+                  targetId,
+                  timeoutMs,
+                },
+              });
+              return jsonResult(result);
+            }
+            return jsonResult(
+              await browserToolDeps.browserArmFileChooser(baseUrl, {
                 paths: normalizedPaths,
                 ref,
                 inputRef,
                 element,
                 targetId,
                 timeoutMs,
-              },
-            });
-            return jsonResult(result);
+                profile,
+              }),
+            );
           }
-          return jsonResult(
-            await browserToolDeps.browserArmFileChooser(baseUrl, {
-              paths: normalizedPaths,
-              ref,
-              inputRef,
-              element,
-              targetId,
-              timeoutMs,
-              profile,
-            }),
-          );
-        }
-        case "dialog": {
-          const accept = Boolean(params.accept);
-          const promptText = typeof params.promptText === "string" ? params.promptText : undefined;
-          const { targetId, timeoutMs } = readOptionalTargetAndTimeout(params);
-          if (proxyRequest) {
-            const result = await proxyRequest({
-              method: "POST",
-              path: "/hooks/dialog",
-              profile,
-              body: {
+          case "dialog": {
+            const accept = Boolean(params.accept);
+            const promptText =
+              typeof params.promptText === "string" ? params.promptText : undefined;
+            const { targetId, timeoutMs } = readOptionalTargetAndTimeout(params);
+            if (proxyRequest) {
+              const result = await proxyRequest({
+                method: "POST",
+                path: "/hooks/dialog",
+                profile,
+                body: {
+                  accept,
+                  promptText,
+                  targetId,
+                  timeoutMs,
+                },
+              });
+              return jsonResult(result);
+            }
+            return jsonResult(
+              await browserToolDeps.browserArmDialog(baseUrl, {
                 accept,
                 promptText,
                 targetId,
                 timeoutMs,
-              },
-            });
-            return jsonResult(result);
+                profile,
+              }),
+            );
           }
-          return jsonResult(
-            await browserToolDeps.browserArmDialog(baseUrl, {
-              accept,
-              promptText,
-              targetId,
-              timeoutMs,
+          case "act": {
+            const request = readActRequestParam(params);
+            if (!request) {
+              throw new Error("request required");
+            }
+            return await executeActAction({
+              request,
+              baseUrl,
               profile,
-            }),
-          );
-        }
-        case "act": {
-          const request = readActRequestParam(params);
-          if (!request) {
-            throw new Error("request required");
+              proxyRequest,
+            });
           }
-          return await executeActAction({
-            request,
-            baseUrl,
-            profile,
-            proxyRequest,
-          });
+          default:
+            throw new Error(`Unknown action: ${action}`);
         }
-        default:
-          throw new Error(`Unknown action: ${action}`);
+      };
+      try {
+        return await run();
+      } catch (error) {
+        const url = tryReadBrowserUrlForApproval(args as Record<string, unknown>);
+        const retried = await maybeAwaitNetworkApprovalAndRetry({
+          toolName: "browser",
+          error,
+          sandboxed: opts?.sandboxed,
+          signal,
+          urlForApproval: url,
+          toolParams: args as Record<string, unknown>,
+          retry: run,
+        });
+        if (retried !== null) {
+          return retried;
+        }
+        throw error;
       }
     },
   };
