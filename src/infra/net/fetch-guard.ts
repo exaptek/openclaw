@@ -1,5 +1,5 @@
 import type { Dispatcher } from "undici";
-import { logWarn } from "../../logger.js";
+import { logError, logWarn } from "../../logger.js";
 import { buildTimeoutAbortSignal } from "../../utils/fetch-timeout.js";
 import { hasProxyEnvConfigured } from "./proxy-env.js";
 import {
@@ -176,7 +176,7 @@ export async function fetchWithSsrFGuard(params: GuardedFetchOptions): Promise<G
       const canUseTrustedEnvProxy =
         mode === GUARDED_FETCH_MODE.TRUSTED_ENV_PROXY && hasProxyEnvConfigured();
       const audit = params.auditContext ?? "url-fetch";
-      logWarn(
+      logError(
         `dns:ssrf: fetch-guard: pin DNS host=${parsedUrl.hostname} url=${parsedUrl.origin}${parsedUrl.pathname} mode=${mode} pinDns=${params.pinDns !== false} trustedEnvProxy=${canUseTrustedEnvProxy} ${audit}`,
       );
       const pinned = await resolvePinnedHostnameWithPolicy(parsedUrl.hostname, {

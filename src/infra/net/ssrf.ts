@@ -1,7 +1,7 @@
 import { lookup as dnsLookupCb, type LookupAddress } from "node:dns";
 import { lookup as dnsLookup, resolve4, resolve6 } from "node:dns/promises";
 import type { Dispatcher } from "undici";
-import { logWarn } from "../../logger.js";
+import { logError } from "../../logger.js";
 import {
   extractEmbeddedIpv4FromIpv6,
   isBlockedSpecialUseIpv4Address,
@@ -304,7 +304,8 @@ function dnsEnvSnapshot(): string {
 }
 
 function logDnsSsrF(message: string): void {
-  logWarn(`dns:ssrf: ${message}`);
+  // Use logError so lines reach the same nohup/stderr capture as `[tools]` (logWarn is often filtered).
+  logError(`dns:ssrf: ${message}`);
 }
 
 function formatErrBrief(err: unknown): string {
